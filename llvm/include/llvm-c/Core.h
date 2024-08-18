@@ -4473,6 +4473,13 @@ LLVMBool LLVMIsMultithreaded(void);
  * @}
  */
 
+//  UNSAFE-RUST BEGIN
+/** Add a new metadata to an instruction, which indicates that this instruction
+ *  is compiled from unsafe Rust source code.
+ */
+void LLVMSetInstUnsafeMetadata(LLVMValueRef Inst);
+//  UNSAFE-RUST END
+
 LLVM_C_EXTERN_C_END
 
 #endif /* LLVM_C_CORE_H */

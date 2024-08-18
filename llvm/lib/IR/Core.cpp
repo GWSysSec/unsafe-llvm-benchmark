@@ -4275,3 +4275,14 @@ void LLVMStopMultithreaded() {
 LLVMBool LLVMIsMultithreaded() {
   return llvm_is_multithreaded();
 }
+
+/*===-- Unsafety ------------------------------------------------------===*/
+
+// UNSAFE-RUST BEGIN
+void LLVMSetInstUnsafeMetadata(LLVMValueRef Inst) {
+  LLVMContext &C = getGlobalContext();
+  MDString *unsafe_inst_mdstr = MDString::get(C, "instruction in unsafe Rust fn or block");
+  MDNode *unsafe_inst_mdnode = MDNode::get(C, unsafe_inst_mdstr);
+  unwrap<Instruction>(Inst)->setMetadata("unsafe_inst", unsafe_inst_mdnode);
+}
+// UNSAFE-RUST END
