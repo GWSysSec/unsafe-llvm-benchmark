@@ -4280,9 +4280,10 @@ LLVMBool LLVMIsMultithreaded() {
 
 // UNSAFE-RUST BEGIN
 void LLVMSetInstUnsafeMetadata(LLVMValueRef Inst) {
-  LLVMContext &C = getGlobalContext();
+  Instruction *I = unwrap<Instruction>(Inst);
+  LLVMContext &C = I->getContext();
   MDString *unsafe_inst_mdstr = MDString::get(C, "instruction in unsafe Rust fn or block");
   MDNode *unsafe_inst_mdnode = MDNode::get(C, unsafe_inst_mdstr);
-  unwrap<Instruction>(Inst)->setMetadata("unsafe_inst", unsafe_inst_mdnode);
+  I->setMetadata("unsafe_inst", unsafe_inst_mdnode);
 }
 // UNSAFE-RUST END
