@@ -135,6 +135,9 @@
 #include "llvm/Transforms/Vectorize/LoopVectorize.h"
 #include "llvm/Transforms/Vectorize/SLPVectorizer.h"
 #include "llvm/Transforms/Vectorize/VectorCombine.h"
+// UNSAFE-RUST BEGIN
+#include "llvm/Transforms/UnsafeRustDummy/UnsafeRustDummy.h"
+// UNSAFE-RUST END
 
 using namespace llvm;
 
@@ -1496,6 +1499,13 @@ PassBuilder::buildPerModuleDefaultPipeline(OptimizationLevel Level,
     return buildO0DefaultPipeline(Level, LTOPreLink);
 
   ModulePassManager MPM;
+
+  // UNSAFE-RUST BEGIN
+  // Add the UnsafeRustDummy pass to the beginning of the opt pipiline.
+  FunctionPassManager FPM;
+  FPM.addPass(UnsafeRustDummyPass());
+  MPM.addPass(createModuleToFunctionPassAdaptor(std::move(FPM)));
+  // UNSAFE-RUST END
 
   // Convert @llvm.global.annotations to !annotation metadata.
   MPM.addPass(Annotation2MetadataPass());

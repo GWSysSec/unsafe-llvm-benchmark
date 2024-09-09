@@ -10,3 +10,6 @@ add_subdirectory(ObjCARC)
 add_subdirectory(Coroutines)
 add_subdirectory(CFGuard)
 add_subdirectory(HipStdPar)
+# UNSAFE-RUST BEGIN
+add_subdirectory(UnsafeRustDummy)
+# UNSAFE-RUST END
