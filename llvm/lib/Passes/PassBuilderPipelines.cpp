@@ -280,6 +280,12 @@ static cl::opt<bool> UseLoopVersioningLICM(
     "enable-loop-versioning-licm", cl::init(false), cl::Hidden,
     cl::desc("Enable the experimental Loop Versioning LICM pass"));
 
+// UNSAFE-RUST BEGIN
+static cl::opt<bool> EnableUnsafeRustDummyPass(
+  "enable-unsafe-rust-dummy", cl::init(false), cl::Hidden,
+  cl::desc("Enable the UnsafeRustDummy pass"));
+// UNSAFE-RUST END
+
 namespace llvm {
 cl::opt<bool> EnableMemProfContextDisambiguation(
     "enable-memprof-context-disambiguation", cl::init(false), cl::Hidden,
@@ -2002,6 +2008,15 @@ ModulePassManager PassBuilder::buildO0DefaultPipeline(OptimizationLevel Level,
          "buildO0DefaultPipeline should only be used with O0");
 
   ModulePassManager MPM;
+
+  // UNSAFE-RUST BEGIN
+  if (EnableUnsafeRustDummyPass) {
+    // Add the UnsafeRustDummy pass to the beginning of the opt pipiline.
+    FunctionPassManager FPM;
+    FPM.addPass(UnsafeRustDummyPass());
+    MPM.addPass(createModuleToFunctionPassAdaptor(std::move(FPM)));
+    // UNSAFE-RUST END
+  }
 
   // Perform pseudo probe instrumentation in O0 mode. This is for the
   // consistency between different build modes. For example, a LTO build can be
