@@ -288,6 +288,8 @@
 #include "llvm/Transforms/Vectorize/LoopVectorize.h"
 #include "llvm/Transforms/Vectorize/SLPVectorizer.h"
 #include "llvm/Transforms/Vectorize/VectorCombine.h"
+#include "llvm/Transforms/Unsafe-rust-test-passes/MyPass.h"
+#include "llvm/Transforms/Unsafe-rust-test-passes/LineCount.h"
 #include <optional>
 
 using namespace llvm;

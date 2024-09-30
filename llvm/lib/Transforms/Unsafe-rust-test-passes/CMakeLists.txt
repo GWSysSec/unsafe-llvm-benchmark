@@ -1,14 +1,9 @@
-add_llvm_component_library(LLVMPasses
-  OptimizationLevel.cpp
-  PassBuilder.cpp
-  PassBuilderBindings.cpp
-  PassBuilderPipelines.cpp
-  PassPlugin.cpp
-  StandardInstrumentations.cpp
+add_llvm_component_library(LLVMUnsafe-rust-test-passes
+  MyPass.cpp
+  LineCount.cpp
 
   ADDITIONAL_HEADER_DIRS
-  ${LLVM_MAIN_INCLUDE_DIR}/llvm
-  ${LLVM_MAIN_INCLUDE_DIR}/llvm/Passes
+  ${LLVM_MAIN_INCLUDE_DIR}/llvm/Transforms/Unsafe-rust-test-passes
 
   DEPENDS
   intrinsics_gen
@@ -24,6 +19,7 @@ add_llvm_component_library(LLVMPasses
   IPO
   InstCombine
   IRPrinter
+  Passes
   ObjCARC
   Scalar
   Support
@@ -31,5 +27,4 @@ add_llvm_component_library(LLVMPasses
   TransformUtils
   Vectorize
   Instrumentation
-  Unsafe-rust-test-passes
   )
