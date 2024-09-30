@@ -1,5 +1,4 @@
 add_llvm_component_library(LLVMUnsafe-rust-test-passes
-  MyPass.cpp
   LineCount.cpp
 
   ADDITIONAL_HEADER_DIRS

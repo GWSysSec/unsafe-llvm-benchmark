@@ -111,7 +111,10 @@ add_llvm_target(X86CodeGen ${sources}
   TransformUtils
   X86Desc
   X86Info
+  # UNSAFE-RUST BEGIN
+  UnsafeRustDummy
   Unsafe-rust-test-passes
+  # UNSAFE-RUST END
 
   ADD_TO_COMPONENT
   X86

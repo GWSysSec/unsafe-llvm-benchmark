@@ -135,9 +135,10 @@
 #include "llvm/Transforms/Vectorize/LoopVectorize.h"
 #include "llvm/Transforms/Vectorize/SLPVectorizer.h"
 #include "llvm/Transforms/Vectorize/VectorCombine.h"
-#include "llvm/Transforms/Unsafe-rust-test-passes/MyPass.h"
+//BEGIN UNSAFE-RUST
 #include "llvm/Transforms/Unsafe-rust-test-passes/LineCount.h"
-
+#include "llvm/Transforms/UnsafeRustDummy/UnsafeRustDummy.h"
+//END UNSAFE-RUST
 using namespace llvm;
 
 static cl::opt<InliningAdvisorMode> UseInlineAdvisor(
@@ -1498,13 +1499,6 @@ PassBuilder::buildPerModuleDefaultPipeline(OptimizationLevel Level,
     return buildO0DefaultPipeline(Level, LTOPreLink);
 
   ModulePassManager MPM;
-
-  //Tutorial Pass (using code based off HelloWorldPass from LLVm website)
-  FunctionPassManager FPM;
-  FPM.addPass(MyPass());
-  //My own line counting pass
-  FPM.addPass(LineCount());
-  MPM.addPass(createModuleToFunctionPassAdaptor(std::move(FPM)));
 
   // Convert @llvm.global.annotations to !annotation metadata.
   MPM.addPass(Annotation2MetadataPass());

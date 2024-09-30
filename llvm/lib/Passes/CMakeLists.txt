@@ -31,5 +31,8 @@ add_llvm_component_library(LLVMPasses
   TransformUtils
   Vectorize
   Instrumentation
+  # UNSAFE-RUST BEGIN
+  UnsafeRustDummy
   Unsafe-rust-test-passes
+  # UNSAFE-RUST END
   )
