@@ -1506,6 +1506,15 @@ PassBuilder::buildPerModuleDefaultPipeline(OptimizationLevel Level,
 
   ModulePassManager MPM;
 
+  FunctionPassManager FPM;
+  //FPM.addPass(LineCount()); //Counts total lines and total unsafe lines at Function Level
+  //FPM.addPass(UnsafeRustDummyPass()); //Prints function names
+
+  //MPM.addPass(createModuleToFunctionPassAdaptor(std::move(FPM)));
+
+  //Adding LineCount to MPM
+  MPM.addPass(LineCount());
+
   // Convert @llvm.global.annotations to !annotation metadata.
   MPM.addPass(Annotation2MetadataPass());
 
