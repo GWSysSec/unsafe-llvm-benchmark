@@ -58,12 +58,15 @@ PreservedAnalyses LineCount::run(Module &M,
                             break;
                     }
 
-                    //Instruction for
+                    //Instruction for loop
                 }
 
             }
 
         }
+
+        llvm::errs() << "# Of instructions in function " << F.getName() << ": " << function_line_count << "\n"
+        << "# Of unsafe instructions in function " << F.getName() << ": " << unsafe_function_line_count << "\n";
 
     }
 
