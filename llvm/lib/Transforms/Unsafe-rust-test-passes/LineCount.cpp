@@ -14,6 +14,8 @@ PreservedAnalyses LineCount::run(Module &M,
     unsigned int unsafe_store_instructions = 0;
     unsigned int unsafe_add_instructions = 0;
     unsigned int unsafe_get_element_ptr_instructions = 0;
+    unsigned int unsafe_sub_instructions = 0;
+    unsigned int unsafe_alloca_instructions = 0;
 
     //llvm::SmallVectorImpl<llvm::StringRef> meta_list = new llvm::SmallVectorImpl(10);
 
@@ -66,6 +68,10 @@ PreservedAnalyses LineCount::run(Module &M,
                         case Instruction::GetElementPtr:
                             ++unsafe_get_element_ptr_instructions;
                             break;
+                        case Instruction::Sub:
+                            ++unsafe_sub_instructions;
+                        case Instruction::Alloca:
+                            ++unsafe_alloca_instructions;
                         default:
                             break;
                     }
@@ -85,19 +91,24 @@ PreservedAnalyses LineCount::run(Module &M,
     llvm::errs() << "# Of instructions in " << M.getName() << ": " << total_line_count << "\n"
     << "# Of unsafe instructions in " << M.getName() << ": " << total_unsafe_line_count << "\n";
 
-    llvm::errs() << "# Of unsafe add instructions in " << M.getName() << ": " << unsafe_add_instructions << "\n"
-    << "# Of unsafe load instructions in " << M.getName() << ": " << unsafe_load_instructions << "\n" 
-    << "# Of unsafe store instructions in " << M.getName() << ": " << unsafe_store_instructions << "\n"
-    << "# Of unsafe pointer calculation instructions in " << M.getName() << ": " << unsafe_get_element_ptr_instructions << "\n";
+    //llvm::errs() << "# Of unsafe add instructions in " << M.getName() << ": " << unsafe_add_instructions << "\n"
+    //<< "# Of unsafe load instructions in " << M.getName() << ": " << unsafe_load_instructions << "\n" 
+    //<< "# Of unsafe store instructions in " << M.getName() << ": " << unsafe_store_instructions << "\n"
+    //<< "# Of unsafe pointer calculation instructions in " << M.getName() << ": " << unsafe_get_element_ptr_instructions << "\n";
+
+    float percent_unsafe = (float) ( (float) total_unsafe_line_count / (float) total_line_count) * 100.0;
 
     J.object([&] {
         J.attribute("module_name", M.getName()); //Module name
         J.attribute("total_instruction_count", total_line_count); //Total instruction count
         J.attribute("total_unsafe_instruction_count", total_unsafe_line_count); //Total unsafe instruction count
         J.attribute("total_unsafe_add_instruction_count", unsafe_add_instructions); //Total unsafe add instruction count
-        J.attribute("total_unsafe_load_instruction_count", unsafe_load_instructions); //Total unsafe add instruction count
-        J.attribute("total_unsafe_store_instruction_count", unsafe_store_instructions); //Total unsafe add instruction count
-        J.attribute("total_unsafe_get_element_ptr_instruction_count", unsafe_get_element_ptr_instructions); //Total unsafe add instruction count
+        J.attribute("total_unsafe_load_instruction_count", unsafe_load_instructions); //Total unsafe load instruction count
+        J.attribute("total_unsafe_store_instruction_count", unsafe_store_instructions); //Total unsafe store instruction count
+        J.attribute("total_unsafe_get_element_ptr_instruction_count", unsafe_get_element_ptr_instructions); //Total unsafe pointer arithmetic instruction count
+        J.attribute("total_unsafe_sub_instruction_count", unsafe_sub_instructions); //Total unsafe sub instruction count
+        J.attribute("total_unsafe_alloca_instruction_count", unsafe_alloca_instructions); //Total unsafe alloca instruction count
+        J.attribute("percent_unsafe", percent_unsafe); //Percentage unsafe code
     });
 
     J.~OStream();
