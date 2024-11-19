@@ -291,6 +291,7 @@
 #include <optional>
 // UNSAFE-RUST BEGIN
 #include "llvm/Transforms/UnsafeRustDummy/UnsafeRustDummy.h"
+#include "llvm/Transforms/SourceCodeMapping/SourceCodeMapping.h"
 // UNSAFE-RUST END
 
 using namespace llvm;

@@ -137,6 +137,7 @@
 #include "llvm/Transforms/Vectorize/VectorCombine.h"
 // UNSAFE-RUST BEGIN
 #include "llvm/Transforms/UnsafeRustDummy/UnsafeRustDummy.h"
+#include "llvm/Transforms/SourceCodeMapping/SourceCodeMapping.h"
 // UNSAFE-RUST END
 
 using namespace llvm;
@@ -284,6 +285,10 @@ static cl::opt<bool> UseLoopVersioningLICM(
 static cl::opt<bool> EnableUnsafeRustDummyPass(
   "enable-unsafe-rust-dummy", cl::init(false), cl::Hidden,
   cl::desc("Enable the UnsafeRustDummy pass"));
+
+// static cl::opt<bool> EnableSourceCodeMappingPass(
+//   "enable-source-code-mapping", cl::init(false), cl::Hidden, cl::desc("Enable the Source Code Mapping Pass")
+// );
 // UNSAFE-RUST END
 
 namespace llvm {
@@ -1510,6 +1515,7 @@ PassBuilder::buildPerModuleDefaultPipeline(OptimizationLevel Level,
   // Add the UnsafeRustDummy pass to the beginning of the opt pipiline.
   FunctionPassManager FPM;
   FPM.addPass(UnsafeRustDummyPass());
+  // FPM.addPass(SourceCodeMappingPass());
   MPM.addPass(createModuleToFunctionPassAdaptor(std::move(FPM)));
   // UNSAFE-RUST END
 
@@ -2015,9 +2021,13 @@ ModulePassManager PassBuilder::buildO0DefaultPipeline(OptimizationLevel Level,
     FunctionPassManager FPM;
     FPM.addPass(UnsafeRustDummyPass());
     MPM.addPass(createModuleToFunctionPassAdaptor(std::move(FPM)));
+
     // UNSAFE-RUST END
   }
-
+    // Add the SourceCodeMapping pass to the beginning of the opt pipiline.
+  FunctionPassManager FPM;
+  FPM.addPass(SourceCodeMappingPass());
+  MPM.addPass(createModuleToFunctionPassAdaptor(std::move(FPM)));
   // Perform pseudo probe instrumentation in O0 mode. This is for the
   // consistency between different build modes. For example, a LTO build can be
   // mixed with an O0 prelink and an O2 postlink. Loading a sample profile in

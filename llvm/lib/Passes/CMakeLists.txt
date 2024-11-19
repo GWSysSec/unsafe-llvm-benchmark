@@ -33,5 +33,6 @@ add_llvm_component_library(LLVMPasses
   Instrumentation
   # UNSAFE-RUST BEGIN
   UnsafeRustDummy
+  SourceCodeMapping
   # UNSAFE-RUST END
   )

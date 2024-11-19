@@ -12,4 +12,5 @@ add_subdirectory(CFGuard)
 add_subdirectory(HipStdPar)
 # UNSAFE-RUST BEGIN
 add_subdirectory(UnsafeRustDummy)
+add_subdirectory(SourceCodeMapping)
 # UNSAFE-RUST END
