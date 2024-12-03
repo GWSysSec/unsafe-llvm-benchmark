@@ -13,4 +13,5 @@ add_subdirectory(HipStdPar)
 # UNSAFE-RUST BEGIN
 add_subdirectory(Unsafe-rust-test-passes)
 add_subdirectory(UnsafeRustDummy)
+add_subdirectory(SourceCodeMapping)
 # UNSAFE-RUST END
