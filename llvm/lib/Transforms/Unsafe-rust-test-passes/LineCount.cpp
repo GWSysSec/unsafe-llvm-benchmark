@@ -88,8 +88,8 @@ PreservedAnalyses LineCount::run(Module &M,
 
     }
 
-    llvm::errs() << "# Of instructions in " << M.getName() << ": " << total_line_count << "\n"
-    << "# Of unsafe instructions in " << M.getName() << ": " << total_unsafe_line_count << "\n";
+    //llvm::errs() << "# Of instructions in " << M.getName() << ": " << total_line_count << "\n"
+    //<< "# Of unsafe instructions in " << M.getName() << ": " << total_unsafe_line_count << "\n";
 
     //llvm::errs() << "# Of unsafe add instructions in " << M.getName() << ": " << unsafe_add_instructions << "\n"
     //<< "# Of unsafe load instructions in " << M.getName() << ": " << unsafe_load_instructions << "\n" 

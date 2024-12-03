@@ -28,7 +28,8 @@
 
 # Nested build directory
 /build*
-
+/build2*
+# ^^ backups for testing purposes
 #==============================================================================#
 # Explicit files to ignore (only matches one).
 #==============================================================================#

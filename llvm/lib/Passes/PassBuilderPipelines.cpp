@@ -284,6 +284,8 @@ static cl::opt<bool> UseLoopVersioningLICM(
 static cl::opt<bool> EnableUnsafeRustDummyPass(
   "enable-unsafe-rust-dummy", cl::init(false), cl::Hidden,
   cl::desc("Enable the UnsafeRustDummy pass"));
+
+static cl::opt<bool> EnableLineCountPass("enable-line-count", cl::init(false), cl::Hidden, cl::desc("Enable LineCount Pass"));
 // UNSAFE-RUST END
 
 namespace llvm {
@@ -1495,6 +1497,10 @@ PassBuilder::buildModuleOptimizationPipeline(OptimizationLevel Level,
   if (!LTOPreLink)
     MPM.addPass(RelLookupTableConverterPass());
 
+  if (EnableLineCountPass) {
+    MPM.addPass(LineCount()); //LineCount after main optimisations
+  }
+
   return MPM;
 }
 
@@ -1506,14 +1512,19 @@ PassBuilder::buildPerModuleDefaultPipeline(OptimizationLevel Level,
 
   ModulePassManager MPM;
 
-  FunctionPassManager FPM;
+  //FunctionPassManager FPM;
   //FPM.addPass(LineCount()); //Counts total lines and total unsafe lines at Function Level
   //FPM.addPass(UnsafeRustDummyPass()); //Prints function names
 
   //MPM.addPass(createModuleToFunctionPassAdaptor(std::move(FPM)));
 
-  //Adding LineCount to MPM
-  MPM.addPass(LineCount());
+  //Adding LineCount to MPM in Release Mode
+  // if (Level == OptimizationLevel::O3) {
+  //   llvm::errs() << "Ran in O3 optimisation\n";
+  //   MPM.addPass(LineCount());
+  // }
+
+  //MPM.addPass(LineCount());
 
   // Convert @llvm.global.annotations to !annotation metadata.
   MPM.addPass(Annotation2MetadataPass());
