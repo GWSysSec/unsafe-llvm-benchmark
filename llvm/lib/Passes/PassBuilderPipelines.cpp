@@ -288,9 +288,9 @@ static cl::opt<bool> EnableUnsafeRustDummyPass(
 
 static cl::opt<bool> EnableLineCountPass("enable-line-count", cl::init(false), cl::Hidden, cl::desc("Enable LineCount Pass"));
 
-// static cl::opt<bool> EnableSourceCodeMappingPass(
-//   "enable-source-code-mapping", cl::init(false), cl::Hidden, cl::desc("Enable the Source Code Mapping Pass")
-// );
+static cl::opt<bool> EnableSourceCodeMappingPass(
+  "enable-source-code-mapping", cl::init(false), cl::Hidden, cl::desc("Enable the Source Code Mapping Pass")
+);
 // UNSAFE-RUST END
 
 namespace llvm {
