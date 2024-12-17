@@ -8,6 +8,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "llvm/Transforms/SourceCodeMapping/SourceCodeMapping.h"
+#include "json.hpp" // Include JSON library
 #include "llvm/IR/DebugInfoMetadata.h"
 #include "llvm/IR/Function.h"
 #include "llvm/Pass.h"
@@ -17,6 +18,8 @@
 #include <sstream>
 #include <string>
 
+using json = nlohmann::json;
+
 using namespace llvm;
 
 PreservedAnalyses SourceCodeMappingPass::run(Function &F,
@@ -24,8 +27,26 @@ PreservedAnalyses SourceCodeMappingPass::run(Function &F,
   errs() << "[SourceCodeMapping3]: Processing Fn " << F.getParent()->getName()
          << "::" << F.getName() << "\n";
 
+  json outputJson;
+  std::string outputFile = "output.json";
+
+  if (std::filesystem::exists(outputFile)) {
+    std::ifstream inFile(outputFile);
+    if (inFile.is_open()) {
+      inFile >> outputJson;
+      inFile.close();
+    } else {
+      errs() << "Error: Could not open existing output.json for reading\n";
+    }
+  }
+
   // .find(unsafe_inst)
+  json functionJson;
+  functionJson["Function"] =
+      F.getParent()->getName().str() + "::" + F.getName().str();
+
   llvm::StringRef unsafe_inst = llvm::StringRef("unsafe_inst");
+  json instructionsJson = json::array();
 
   for (auto &BB : F) {
     for (auto &I : BB) {
@@ -33,36 +54,76 @@ PreservedAnalyses SourceCodeMappingPass::run(Function &F,
         MDNode *is_unsafe = I.getMetadata(unsafe_inst);
         if (is_unsafe) {
 
-          // errs() << "Metadata Node: " << is_unsafe << "\n";
           unsigned Line = Loc->getLine();
           StringRef File = Loc->getFilename();
           StringRef Directory = Loc->getDirectory();
           std::string FullPath = (Directory + "/" + File).str();
 
-          unsigned num_ops = Loc->getNumOperands();
-          for (int i = 0; i++; i < num_ops) {
-            errs() << "[MD Operand]: " << Loc->getOperand(i) << "\n";
-          }
-
-          errs() << "MD Ops: " << num_ops << "\n";
-
-          errs() << "[Source Lines]: " << FullPath << ":" << Line << "\n";
-
+          std::string sourceLine;
           std::ifstream file(FullPath);
-
-          std::string line;
-          int currentLine = 1;
-          while (std::getline(file, line)) {
-            if (currentLine == Line) {
-              errs() << "Line " << Line << ": " << line << "\n";
+          if (file.is_open()) {
+            std::string line;
+            int currentLine = 1;
+            while (std::getline(file, line)) {
+              if (currentLine == Line) {
+                sourceLine = line;
+                break;
+              }
+              ++currentLine;
             }
-            ++currentLine;
+            file.close();
           }
 
-          errs() << "[LLVM IR]: " << I << "\n";
+          json instructionJson;
+          instructionJson["File"] = FullPath;
+          instructionJson["Line"] = Line;
+          instructionJson["SourceLine"] = sourceLine;
+          std::string instrStr;
+          llvm::raw_string_ostream instrStream(instrStr);
+          I.print(instrStream); // Convert LLVM IR to string
+          instructionJson["LLVM IR"] = instrStream.str();
+
+          instructionsJson.push_back(instructionJson);
+
+          // unsigned num_ops = Loc->getNumOperands();
+          // for (int i = 0; i++; i < num_ops) {
+          //   errs() << "[MD Operand]: " << Loc->getOperand(i) << "\n";
+          // }
+
+          // errs() << "MD Ops: " << num_ops << "\n";
+
+          // errs() << "[Source Lines]: " << FullPath << ":" << Line << "\n";
+
+          // std::ifstream file(FullPath);
+
+          // std::string line;
+          // int currentLine = 1;
+          // while (std::getline(file, line)) {
+          //   if (currentLine == Line) {
+          //     errs() << "Line " << Line << ": " << line << "\n";
+          //   }
+          //   ++currentLine;
+          // }
+
+          // errs() << "[LLVM IR]: " << I << "\n";
         }
       }
     }
+  }
+
+  functionJson["Instructions"] = instructionsJson;
+  if (!outputJson.contains("Functions")) {
+    outputJson["Functions"] = json::array();
+  }
+  outputJson["Functions"].push_back(functionJson);
+
+  std::ofstream outFile(outputFile);
+  if (outFile.is_open()) {
+    outFile << outputJson.dump(4); // Pretty print with 4 spaces
+    outFile.close();
+    errs() << "Output appended to output.json\n";
+  } else {
+    errs() << "Error: Could not open output.json for writing\n";
   }
 
   return PreservedAnalyses::all();
