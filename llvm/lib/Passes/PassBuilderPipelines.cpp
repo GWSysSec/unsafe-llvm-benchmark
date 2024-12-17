@@ -2033,13 +2033,14 @@ ModulePassManager PassBuilder::buildO0DefaultPipeline(OptimizationLevel Level,
     FunctionPassManager FPM;
     FPM.addPass(UnsafeRustDummyPass());
     MPM.addPass(createModuleToFunctionPassAdaptor(std::move(FPM)));
-
-    // UNSAFE-RUST END
   }
     // Add the SourceCodeMapping pass to the beginning of the opt pipiline.
-  FunctionPassManager FPM;
-  FPM.addPass(SourceCodeMappingPass());
-  MPM.addPass(createModuleToFunctionPassAdaptor(std::move(FPM)));
+  if (EnableSourceCodeMappingPass) {
+    FunctionPassManager FPM;
+    FPM.addPass(SourceCodeMappingPass());
+    MPM.addPass(createModuleToFunctionPassAdaptor(std::move(FPM)));
+  }
+  // UNSAFE-RUST END
   // Perform pseudo probe instrumentation in O0 mode. This is for the
   // consistency between different build modes. For example, a LTO build can be
   // mixed with an O0 prelink and an O2 postlink. Loading a sample profile in

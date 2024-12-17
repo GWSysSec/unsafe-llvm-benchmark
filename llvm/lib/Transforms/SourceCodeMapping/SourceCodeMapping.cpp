@@ -24,8 +24,8 @@ using namespace llvm;
 
 PreservedAnalyses SourceCodeMappingPass::run(Function &F,
                                              FunctionAnalysisManager &AM) {
-  errs() << "[SourceCodeMapping3]: Processing Fn " << F.getParent()->getName()
-         << "::" << F.getName() << "\n";
+  // errs() << "[SourceCodeMapping3]: Processing Fn " << F.getParent()->getName()
+  //        << "::" << F.getName() << "\n";
 
   json outputJson;
   std::string outputFile = "output.json";
@@ -121,7 +121,7 @@ PreservedAnalyses SourceCodeMappingPass::run(Function &F,
   if (outFile.is_open()) {
     outFile << outputJson.dump(4); // Pretty print with 4 spaces
     outFile.close();
-    errs() << "Output appended to output.json\n";
+    //errs() << "Output appended to output.json\n";
   } else {
     errs() << "Error: Could not open output.json for writing\n";
   }
