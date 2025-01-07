@@ -30,15 +30,15 @@ PreservedAnalyses SourceCodeMappingPass::run(Function &F,
   json outputJson;
   std::string outputFile = "output.json";
 
-  if (std::filesystem::exists(outputFile)) {
-    std::ifstream inFile(outputFile);
-    if (inFile.is_open()) {
-      inFile >> outputJson;
-      inFile.close();
-    } else {
-      errs() << "Error: Could not open existing output.json for reading\n";
-    }
-  }
+  // if (std::filesystem::exists(outputFile)) {
+  //   std::ifstream inFile(outputFile);
+  //   if (inFile.is_open()) {
+  //     inFile >> outputJson;
+  //     inFile.close();
+  //   } else {
+  //     errs() << "Error: Could not open existing output.json for reading\n";
+  //   }
+  // }
 
   // .find(unsafe_inst)
   json functionJson;
@@ -84,28 +84,6 @@ PreservedAnalyses SourceCodeMappingPass::run(Function &F,
           instructionJson["LLVM IR"] = instrStream.str();
 
           instructionsJson.push_back(instructionJson);
-
-          // unsigned num_ops = Loc->getNumOperands();
-          // for (int i = 0; i++; i < num_ops) {
-          //   errs() << "[MD Operand]: " << Loc->getOperand(i) << "\n";
-          // }
-
-          // errs() << "MD Ops: " << num_ops << "\n";
-
-          // errs() << "[Source Lines]: " << FullPath << ":" << Line << "\n";
-
-          // std::ifstream file(FullPath);
-
-          // std::string line;
-          // int currentLine = 1;
-          // while (std::getline(file, line)) {
-          //   if (currentLine == Line) {
-          //     errs() << "Line " << Line << ": " << line << "\n";
-          //   }
-          //   ++currentLine;
-          // }
-
-          // errs() << "[LLVM IR]: " << I << "\n";
         }
       }
     }
