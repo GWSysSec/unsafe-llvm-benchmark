@@ -137,6 +137,7 @@
 #include "llvm/Transforms/Vectorize/VectorCombine.h"
 // UNSAFE-RUST BEGIN
 #include "llvm/Transforms/UnsafeRustDummy/UnsafeRustDummy.h"
+#include "llvm/Transforms/DynamicLineCount/DynamicLineCount.h"
 // UNSAFE-RUST END
 
 using namespace llvm;
@@ -284,6 +285,12 @@ static cl::opt<bool> UseLoopVersioningLICM(
 static cl::opt<bool> EnableUnsafeRustDummyPass(
   "enable-unsafe-rust-dummy", cl::init(false), cl::Hidden,
   cl::desc("Enable the UnsafeRustDummy pass"));
+
+//  static cl::opt<bool> EnableDynamicLineCountPass(
+//  "enable-dynamic-line-count", 
+//  cl::init(false),  // Changed from true to false
+//  cl::Hidden,
+//  cl::desc("Enable the DynamicLineCount pass (default: off)"));
 // UNSAFE-RUST END
 
 namespace llvm {
@@ -1510,6 +1517,7 @@ PassBuilder::buildPerModuleDefaultPipeline(OptimizationLevel Level,
   // Add the UnsafeRustDummy pass to the beginning of the opt pipiline.
   FunctionPassManager FPM;
   FPM.addPass(UnsafeRustDummyPass());
+  // FRM.addPass(DynamicLineCountPass());
   MPM.addPass(createModuleToFunctionPassAdaptor(std::move(FPM)));
   // UNSAFE-RUST END
 
@@ -2009,14 +2017,20 @@ ModulePassManager PassBuilder::buildO0DefaultPipeline(OptimizationLevel Level,
 
   ModulePassManager MPM;
 
-  // UNSAFE-RUST BEGIN
+  // UNSAFE-RUST BEGIN 
   if (EnableUnsafeRustDummyPass) {
-    // Add the UnsafeRustDummy pass to the beginning of the opt pipiline.
+  // Add the UnsafeRustDummy pass to the beginning of the opt pipiline.
     FunctionPassManager FPM;
     FPM.addPass(UnsafeRustDummyPass());
     MPM.addPass(createModuleToFunctionPassAdaptor(std::move(FPM)));
-    // UNSAFE-RUST END
+  // UNSAFE-RUST END
   }
+
+  // UNSAFE-RUST BEGIN 
+    FunctionPassManager FPM;
+    FPM.addPass(DynamicLineCountPass());
+    MPM.addPass(createModuleToFunctionPassAdaptor(std::move(FPM)));
+  // UNSAFE-RUST END
 
   // Perform pseudo probe instrumentation in O0 mode. This is for the
   // consistency between different build modes. For example, a LTO build can be
