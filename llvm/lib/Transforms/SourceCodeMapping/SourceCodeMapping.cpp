@@ -95,7 +95,7 @@ PreservedAnalyses SourceCodeMappingPass::run(Function &F,
   }
   outputJson["Functions"].push_back(functionJson);
 
-  std::ofstream outFile(outputFile);
+  std::ofstream outFile(outputFile, std::ios::app);
   if (outFile.is_open()) {
     outFile << outputJson.dump(4); // Pretty print with 4 spaces
     outFile.close();
