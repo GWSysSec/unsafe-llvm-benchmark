@@ -290,6 +290,7 @@
 #include "llvm/Transforms/Vectorize/VectorCombine.h"
 #include <optional>
 // UNSAFE-RUST BEGIN
+// #include "llvm/Transforms/DebugInfoPreserve/DebugInfoPreserver.h"
 #include "llvm/Transforms/UnsafeRustDummy/UnsafeRustDummy.h"
 #include "llvm/Transforms/DynamicLineCount/DynamicLineCount.h"
 // UNSAFE-RUST END

@@ -1,170 +1,142 @@
-//===-- DynamicLineCount.cpp - Source Line Counter Implementation --------===//
 #include "llvm/Transforms/DynamicLineCount/DynamicLineCount.h"
+#include "llvm/IR/InstIterator.h"
 #include "llvm/IR/DebugInfoMetadata.h"
 #include "llvm/IR/IRBuilder.h"
-#include "llvm/IR/IntrinsicInst.h"
-#include "llvm/IR/Module.h"
+#include "llvm/IR/Instructions.h"
 #include "llvm/Support/raw_ostream.h"
-#include "llvm/ADT/SmallSet.h"
+
+#include <set>
+#include <string>
+#include <algorithm>
 
 using namespace llvm;
 
-bool DynamicLineCountPass::isCompilerGenerated(const Instruction &I) const {
-    if (isa<DbgInfoIntrinsic>(I)) return true;
-    if (I.isDebugOrPseudoInst()) return true;
-    if (!I.getDebugLoc()) return true;
-    return false;
+/// utility to sanitize filenames for global variable names
+static std::string sanitizeFileName(const std::string &File) {
+    std::string Name = File;
+    std::replace(Name.begin(), Name.end(), '/', '_');
+    std::replace(Name.begin(), Name.end(), '\\', '_');
+    std::replace(Name.begin(), Name.end(), '.', '_');
+    return Name;
 }
 
-bool DynamicLineCountPass::skipLibraryFile(StringRef File) const {
-    if (File.contains("/rustc/")) return true;
-    if (File.contains("/library/")) return true;
-    return false;
-}
+/// decide if a file is "in-project" or library/extern
+static bool isProjectFile(StringRef File) {
+    // 1) skip obviously external or toolchain-related files
+    if (File.contains("/rustc/"))
+        return false;
+    if (File.contains("/.cargo/"))
+        return false;
 
-bool DynamicLineCountPass::isUnsafeInstruction(const Instruction &I) const {
-    return (I.getMetadata("unsafe_inst") != nullptr);
-}
+    // 2) skip locally cloned standard library code (e.g., library/core/, library/std/, etc.)
+    if (File.contains("/library/"))
+        return false;
 
-void DynamicLineCountPass::processSourceLocation(const DILocation *Loc, bool IsUnsafe, Function &F) {
-    if (!Loc) return;
-
-    const DILocation *UserLoc = Loc;
-    while (UserLoc) {
-        StringRef Filename = UserLoc->getFilename();
-        if (!skipLibraryFile(Filename)) {
-            break;
-        }
-        UserLoc = UserLoc->getInlinedAt();
-    }
-    if (!UserLoc) return;
-
-    unsigned Line = UserLoc->getLine();
-    StringRef File = UserLoc->getFilename();
-    SourceLocation SrcLoc{File.str(), Line, IsUnsafe};
-
-    if (SeenLines.insert(SrcLoc).second) {
-        IRBuilder<> Builder(&F.getEntryBlock().front());
-        insertLineCounter(Builder, SrcLoc);
-    }
-}
-
-void DynamicLineCountPass::insertLineCounter(IRBuilder<> &Builder, const SourceLocation &Loc) {
-    Module *M = Builder.GetInsertBlock()->getModule();
-    LLVMContext &Ctx = M->getContext();
-
-    FunctionType *FTy = FunctionType::get(
-        Type::getVoidTy(Ctx),
-        {Type::getInt64Ty(Ctx), PointerType::get(Type::getInt8Ty(Ctx), 0)},
-        false
-    );
-
-    StringRef FuncName = Loc.IsUnsafe
-        ? "update_unsafe_line_counter"
-        : "update_line_counter";
-
-    auto Callee = M->getOrInsertFunction(FuncName, FTy).getCallee();
-    auto *Fn = cast<Function>(Callee);
-
-    Value *LineNo = ConstantInt::get(Type::getInt64Ty(Ctx), Loc.Line);
-    Value *Filename = Builder.CreateGlobalStringPtr(Loc.File);
-    Builder.CreateCall(Fn, {LineNo, Filename});
-}
-
-void DynamicLineCountPass::insertExecutionCounter(IRBuilder<> &Builder, const SourceLocation &Loc) {
-    Module *M = Builder.GetInsertBlock()->getModule();
-    LLVMContext &Ctx = M->getContext();
-
-    FunctionType *FTy = FunctionType::get(
-        Type::getVoidTy(Ctx),
-        {Type::getInt64Ty(Ctx), PointerType::get(Type::getInt8Ty(Ctx), 0)},
-        false
-    );
-
-    StringRef FuncName = Loc.IsUnsafe
-        ? "mark_unsafe_line_executed"
-        : "mark_line_executed";
-
-    auto Callee = M->getOrInsertFunction(FuncName, FTy).getCallee();
-    auto *Fn = cast<Function>(Callee);
-
-    Value *LineNo = ConstantInt::get(Type::getInt64Ty(Ctx), Loc.Line);
-    Value *Filename = Builder.CreateGlobalStringPtr(Loc.File);
-    Builder.CreateCall(Fn, {LineNo, Filename});
-}
-
-void DynamicLineCountPass::instrumentBasicBlock(BasicBlock &BB, Function &F) {
-    if (BB.isEHPad() || BB.empty())
-        return;
-
-    StringRef FName = F.getName();
-    if (FName.startswith("_ZN3std") ||
-        FName.startswith("_ZN4core") ||
-        FName.startswith("_ZN5alloc") ||
-        FName.startswith("_ZN9hashbrown") ||
-        FName.startswith("_ZN7__test") ||
-        FName.contains("::rt::") ||
-        FName.contains(".rt.") ||
-        FName.contains("::panic") ||
-        FName.contains(".panic")) {
-        return;
-    }
-
-    IRBuilder<> Builder(&BB.front());
+    // If there is a canonical project root path, further filter:
+    //   StringRef ProjectRoot = "/home/oscar/Projects/unsafebench/"; 
+    //   if (!File.startswith(ProjectRoot))
+    //       return false;
     
-    SmallSet<LineKey, 8> InstrumentedLines;
-    SmallSet<LineKey, 8> UnsafeLines;
-
-    for (Instruction &I : BB) {
-        if (!isCompilerGenerated(I)) {
-            if (const DILocation *Loc = I.getDebugLoc()) {
-                std::string Filename = Loc->getFilename().str();
-                unsigned Line = Loc->getLine();
-                LineKey Key = std::make_pair(Filename, Line);
-                
-                if (isUnsafeInstruction(I)) {
-                    UnsafeLines.insert(Key);
-                }
-            }
-        }
-    }
-
-    for (Instruction &I : BB) {
-        if (!isCompilerGenerated(I)) {
-            if (const DILocation *Loc = I.getDebugLoc()) {
-                std::string Filename = Loc->getFilename().str();
-                unsigned Line = Loc->getLine();
-                LineKey Key = std::make_pair(Filename, Line);
-                
-                if (!InstrumentedLines.contains(Key)) {
-                    InstrumentedLines.insert(Key);
-                    
-                    bool IsUnsafe = UnsafeLines.contains(Key);
-                    
-                    processSourceLocation(Loc, IsUnsafe, F);
-                    
-                    SourceLocation ExLoc{
-                        std::move(Filename),
-                        Line,
-                        IsUnsafe
-                    };
-                    insertExecutionCounter(Builder, ExLoc);
-                }
-            }
-        }
-    }
+    // otherwise, if none of the skip criteria matched, consider it a project file
+    return true;
 }
 
 PreservedAnalyses DynamicLineCountPass::run(Function &F, FunctionAnalysisManager &AM) {
-    if (F.isDeclaration()) {
+    if (F.isDeclaration())
         return PreservedAnalyses::all();
+
+    Module *M = F.getParent();
+    LLVMContext &Ctx = M->getContext();
+
+    // prepare the function prototypes for our runtime hooks: (int64, i8*) -> void
+    Type *VoidTy = Type::getVoidTy(Ctx);
+    Type *Int64Ty = Type::getInt64Ty(Ctx);
+    Type *Int8Ty  = Type::getInt8Ty(Ctx);
+    Type *Int8PtrTy = PointerType::getUnqual(Int8Ty);
+
+    FunctionType *FnTy = FunctionType::get(VoidTy, {Int64Ty, Int8PtrTy}, false);
+    FunctionCallee UpdateUnsafe =
+        M->getOrInsertFunction("update_unsafe_line_counter", FnTy);
+    FunctionCallee MarkUnsafe =
+        M->getOrInsertFunction("mark_unsafe_line_executed", FnTy);
+
+    // we only instrument each (File,Line) pair once per function
+    std::set<std::pair<std::string, unsigned>> InstrumentedLines;
+
+    bool Modified = false;
+
+    // loop over all instructions that have our "unsafe_inst" metadata
+    for (Instruction &I : instructions(F)) {
+        if (!I.getMetadata("unsafe_inst"))
+            continue;
+
+        DebugLoc DL = I.getDebugLoc();
+        if (!DL)
+            continue; // has no debug info
+
+        const DILocation *Loc = DL.get();
+        StringRef File = Loc->getFilename();
+        if (File.empty())
+            continue;
+
+        // now apply our filter: skip library / rustc / cargo code
+        if (!isProjectFile(File))
+            continue;  // skip instrumentation for non-project files
+
+        // for project code, record the line
+        unsigned Line = Loc->getLine();
+        auto Key = std::make_pair(File.str(), Line);
+
+        // only instrument once per (File,Line) in this Function
+        if (!InstrumentedLines.insert(Key).second) {
+            // already did it in this function
+            continue;
+        }
+
+        // pick a safe insertion point
+        IRBuilder<> Builder(Ctx);
+        if (isa<PHINode>(I) || isa<LandingPadInst>(I)) {
+            BasicBlock *BB = I.getParent();
+            Instruction *InsertPoint = nullptr;
+            for (Instruction &Inst : *BB) {
+                if (!isa<PHINode>(Inst) && !isa<LandingPadInst>(Inst)) {
+                    InsertPoint = &Inst;
+                    break;
+                }
+            }
+            if (!InsertPoint)
+                continue; // can't find suitable insertion point
+            Builder.SetInsertPoint(InsertPoint);
+        } else {
+            // insert right before 'I'
+            Builder.SetInsertPoint(&I);
+        }
+
+        // create or reuse a global string for 'File'
+        std::string GlobalName = "unsafe_str_" + sanitizeFileName(File.str());
+        GlobalVariable *GV = M->getNamedGlobal(GlobalName);
+        if (!GV) {
+            auto *FileConstant = ConstantDataArray::getString(Ctx, File.str(), true);
+            GV = new GlobalVariable(
+                *M, FileConstant->getType(), /*isConstant=*/true,
+                GlobalValue::InternalLinkage, FileConstant, GlobalName
+            );
+            GV->setUnnamedAddr(GlobalValue::UnnamedAddr::Global);
+        }
+        Value *FileArg = Builder.CreateBitCast(GV, Int8PtrTy);
+
+        // insert calls to update_unsafe_line_counter and mark_unsafe_line_executed
+        Builder.CreateCall(UpdateUnsafe, {
+            ConstantInt::get(Int64Ty, Line),
+            FileArg
+        });
+        Builder.CreateCall(MarkUnsafe, {
+            ConstantInt::get(Int64Ty, Line),
+            FileArg
+        });
+
+        Modified = true;
     }
 
-    SeenLines.clear();
-
-    for (BasicBlock &BB : F) {
-        instrumentBasicBlock(BB, F);
-    }
-
-    return PreservedAnalyses::none();
+    return Modified ? PreservedAnalyses::none() : PreservedAnalyses::all();
 }

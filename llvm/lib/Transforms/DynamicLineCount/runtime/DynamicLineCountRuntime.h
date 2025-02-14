@@ -11,6 +11,7 @@
 
 #include <cstdint>
 
+// platform-specific export macro definitions
 #if defined(_WIN32) || defined(__CYGWIN__)
   #ifdef LLVM_DYNAMICLINECOUNT_BUILD_SHARED
     #define RUNTIME_EXPORT __declspec(dllexport)
@@ -27,17 +28,11 @@
 
 extern "C" {
 
-RUNTIME_EXPORT void update_line_counter(int64_t LineNum, const char *File);
+// core functions for unsafe line tracking
 RUNTIME_EXPORT void update_unsafe_line_counter(int64_t LineNum, const char *File);
-RUNTIME_EXPORT void mark_line_executed(int64_t LineNum, const char *File);
 RUNTIME_EXPORT void mark_unsafe_line_executed(int64_t LineNum, const char *File);
 RUNTIME_EXPORT void print_coverage_stats(void);
 
 } // extern "C"
-
-// TEST USE ONLY
-#ifndef RUNTIME_BUFFER_SIZE
-#define RUNTIME_BUFFER_SIZE 1000
-#endif
 
 #endif // LLVM_TRANSFORMS_DYNAMICLINECOUNT_RUNTIME_H

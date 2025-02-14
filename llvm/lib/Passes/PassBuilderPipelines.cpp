@@ -285,12 +285,6 @@ static cl::opt<bool> UseLoopVersioningLICM(
 static cl::opt<bool> EnableUnsafeRustDummyPass(
   "enable-unsafe-rust-dummy", cl::init(false), cl::Hidden,
   cl::desc("Enable the UnsafeRustDummy pass"));
-
-//  static cl::opt<bool> EnableDynamicLineCountPass(
-//  "enable-dynamic-line-count", 
-//  cl::init(false),  // Changed from true to false
-//  cl::Hidden,
-//  cl::desc("Enable the DynamicLineCount pass (default: off)"));
 // UNSAFE-RUST END
 
 namespace llvm {
@@ -1517,7 +1511,7 @@ PassBuilder::buildPerModuleDefaultPipeline(OptimizationLevel Level,
   // Add the UnsafeRustDummy pass to the beginning of the opt pipiline.
   FunctionPassManager FPM;
   FPM.addPass(UnsafeRustDummyPass());
-  // FRM.addPass(DynamicLineCountPass());
+  FPM.addPass(DynamicLineCountPass());
   MPM.addPass(createModuleToFunctionPassAdaptor(std::move(FPM)));
   // UNSAFE-RUST END
 
