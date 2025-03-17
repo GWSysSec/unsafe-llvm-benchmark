@@ -16,11 +16,9 @@ PreservedAnalyses LineCount::run(Module &M,
     unsigned int unsafe_get_element_ptr_instructions = 0;
     unsigned int unsafe_sub_instructions = 0;
     unsigned int unsafe_alloca_instructions = 0;
-
-    //llvm::SmallVectorImpl<llvm::StringRef> meta_list = new llvm::SmallVectorImpl(10);
-
-    //JSON Boilerplate
-    //std::string buf = "";
+    unsigned int unsafe_ptrtoint_instructions = 0;
+    unsigned int unsafe_inttoptr_instructions = 0;
+    unsigned int unsafe_bitcast_instructions = 0;
 
 
     std::error_code e;
@@ -59,19 +57,22 @@ PreservedAnalyses LineCount::run(Module &M,
                     switch (I.getOpcode()) {
                         case Instruction::Add:
                             ++unsafe_add_instructions;
-                            break;
                         case Instruction::Load:
                             ++unsafe_load_instructions;
-                            break;
                         case Instruction::Store:
                             ++unsafe_store_instructions;
                         case Instruction::GetElementPtr:
                             ++unsafe_get_element_ptr_instructions;
-                            break;
                         case Instruction::Sub:
                             ++unsafe_sub_instructions;
                         case Instruction::Alloca:
                             ++unsafe_alloca_instructions;
+                        case Instruction::PtrToInt:
+                            ++unsafe_ptrtoint_instructions;
+                        case Instruction::IntToPtr:
+                            ++unsafe_inttoptr_instructions;
+                        case Instruction::BitCast:
+                            ++unsafe_bitcast_instructions;
                         default:
                             break;
                     }
@@ -108,6 +109,9 @@ PreservedAnalyses LineCount::run(Module &M,
         J.attribute("total_unsafe_get_element_ptr_instruction_count", unsafe_get_element_ptr_instructions); //Total unsafe pointer arithmetic instruction count
         J.attribute("total_unsafe_sub_instruction_count", unsafe_sub_instructions); //Total unsafe sub instruction count
         J.attribute("total_unsafe_alloca_instruction_count", unsafe_alloca_instructions); //Total unsafe alloca instruction count
+        J.attribute("total_unsafe_ptrtoint_instruction_count", unsafe_ptrtoint_instructions); //Total unsafe ptrtoint instruction count
+        J.attribute("total_unsafe_inttoptr_instruction_count", unsafe_inttoptr_instructions); //Total unsafe inttoptr instruction count
+        J.attribute("total_unsafe_bitcast_instruction_count", unsafe_bitcast_instructions); //Total unsafe bitcast instruction count
         J.attribute("percent_unsafe", percent_unsafe); //Percentage unsafe code
     });
 
