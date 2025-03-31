@@ -96,8 +96,12 @@ PreservedAnalyses LineCount::run(Module &M,
     //<< "# Of unsafe load instructions in " << M.getName() << ": " << unsafe_load_instructions << "\n" 
     //<< "# Of unsafe store instructions in " << M.getName() << ": " << unsafe_store_instructions << "\n"
     //<< "# Of unsafe pointer calculation instructions in " << M.getName() << ": " << unsafe_get_element_ptr_instructions << "\n";
+    
+    float percent_unsafe = 0;
 
-    float percent_unsafe = (float) ( (float) total_unsafe_line_count / (float) total_line_count) * 100.0;
+    if (total_unsafe_line_count != 0) {
+        percent_unsafe = (float) ( (float) total_unsafe_line_count / (float) total_line_count) * 100.0;
+    }
 
     J.object([&] {
         J.attribute("module_name", M.getName()); //Module name
