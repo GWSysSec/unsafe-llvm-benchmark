@@ -14,4 +14,6 @@ add_subdirectory(HipStdPar)
 add_subdirectory(Unsafe-rust-test-passes)
 add_subdirectory(UnsafeRustDummy)
 add_subdirectory(SourceCodeMapping)
+# add_subdirectory(DebugInfoPreserve)
+add_subdirectory(DynamicLineCount)
 # UNSAFE-RUST END

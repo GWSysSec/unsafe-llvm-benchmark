@@ -139,6 +139,7 @@
 #include "llvm/Transforms/Unsafe-rust-test-passes/LineCount.h"
 #include "llvm/Transforms/UnsafeRustDummy/UnsafeRustDummy.h"
 #include "llvm/Transforms/SourceCodeMapping/SourceCodeMapping.h"
+#include "llvm/Transforms/DynamicLineCount/DynamicLineCount.h"
 // UNSAFE-RUST END
 using namespace llvm;
 
@@ -1531,6 +1532,15 @@ PassBuilder::buildPerModuleDefaultPipeline(OptimizationLevel Level,
 
   //MPM.addPass(LineCount());
 
+  // UNSAFE-RUST BEGIN
+  // Add the UnsafeRustDummy pass to the beginning of the opt pipiline.
+  FunctionPassManager FPM;
+  FPM.addPass(UnsafeRustDummyPass());
+  FPM.addPass(DynamicLineCountPass());
+  MPM.addPass(createModuleToFunctionPassAdaptor(std::move(FPM)));
+  // UNSAFE-RUST END
+
+
   // Convert @llvm.global.annotations to !annotation metadata.
   MPM.addPass(Annotation2MetadataPass());
 
@@ -2027,9 +2037,9 @@ ModulePassManager PassBuilder::buildO0DefaultPipeline(OptimizationLevel Level,
 
   ModulePassManager MPM;
 
-  // UNSAFE-RUST BEGIN
+  // UNSAFE-RUST BEGIN 
   if (EnableUnsafeRustDummyPass) {
-    // Add the UnsafeRustDummy pass to the beginning of the opt pipiline.
+  // Add the UnsafeRustDummy pass to the beginning of the opt pipiline.
     FunctionPassManager FPM;
     FPM.addPass(UnsafeRustDummyPass());
     MPM.addPass(createModuleToFunctionPassAdaptor(std::move(FPM)));
@@ -2040,7 +2050,13 @@ ModulePassManager PassBuilder::buildO0DefaultPipeline(OptimizationLevel Level,
     FPM.addPass(SourceCodeMappingPass());
     MPM.addPass(createModuleToFunctionPassAdaptor(std::move(FPM)));
   }
+
+  FunctionPassManager FPM;
+  FPM.addPass(DynamicLineCountPass());
+  MPM.addPass(createModuleToFunctionPassAdaptor(std::move(FPM)));
   // UNSAFE-RUST END
+
+
   // Perform pseudo probe instrumentation in O0 mode. This is for the
   // consistency between different build modes. For example, a LTO build can be
   // mixed with an O0 prelink and an O2 postlink. Loading a sample profile in

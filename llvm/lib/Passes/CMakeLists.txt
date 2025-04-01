@@ -35,5 +35,6 @@ add_llvm_component_library(LLVMPasses
   UnsafeRustDummy
   Unsafe-rust-test-passes
   SourceCodeMapping
+  DynamicLineCount
   # UNSAFE-RUST END
   )

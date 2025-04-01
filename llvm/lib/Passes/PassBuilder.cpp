@@ -288,12 +288,13 @@
 #include "llvm/Transforms/Vectorize/LoopVectorize.h"
 #include "llvm/Transforms/Vectorize/SLPVectorizer.h"
 #include "llvm/Transforms/Vectorize/VectorCombine.h"
-#include "llvm/Transforms/UnsafeRustDummy/UnsafeRustDummy.h"
 #include <optional>
 // UNSAFE-RUST BEGIN
 #include "llvm/Transforms/Unsafe-rust-test-passes/LineCount.h"
 #include "llvm/Transforms/UnsafeRustDummy/UnsafeRustDummy.h"
 #include "llvm/Transforms/SourceCodeMapping/SourceCodeMapping.h"
+// #include "llvm/Transforms/DebugInfoPreserve/DebugInfoPreserver.h"
+#include "llvm/Transforms/DynamicLineCount/DynamicLineCount.h"
 // UNSAFE-RUST END
 
 using namespace llvm;
