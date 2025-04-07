@@ -1,5 +1,5 @@
 add_llvm_library(LLVMDynamicLineCountRuntime
-  SHARED
+  STATIC
   DynamicLineCountRuntime.cpp
 
   DEPENDS
@@ -9,28 +9,27 @@ add_llvm_library(LLVMDynamicLineCountRuntime
   Support
 )
 
-# visibility settings for exports
+# Define static library build
 target_compile_definitions(LLVMDynamicLineCountRuntime PRIVATE
-  "LLVM_DYNAMICLINECOUNT_BUILD_SHARED"
+  "LLVM_DYNAMICLINECOUNT_STATIC"
 )
 
-# set target properties
+# Explicitly link with C++ standard library
+target_link_libraries(LLVMDynamicLineCountRuntime PRIVATE stdc++)
+
+# Set target properties
 set_target_properties(LLVMDynamicLineCountRuntime PROPERTIES
   POSITION_INDEPENDENT_CODE ON
   OUTPUT_NAME "LLVMDynamicLineCountRuntime"
-  C_VISIBILITY_PRESET hidden
-  CXX_VISIBILITY_PRESET hidden
-  VISIBILITY_INLINES_HIDDEN ON
 )
 
-# install runtime components
+# Install runtime components
 install(TARGETS LLVMDynamicLineCountRuntime
   LIBRARY DESTINATION lib${LLVM_LIBDIR_SUFFIX}
   ARCHIVE DESTINATION lib${LLVM_LIBDIR_SUFFIX}
-  RUNTIME DESTINATION bin
 )
 
-# Install headers
+# Install header with correct path
 install(FILES
   DynamicLineCountRuntime.h
   DESTINATION include/llvm/Transforms/DynamicLineCount/runtime

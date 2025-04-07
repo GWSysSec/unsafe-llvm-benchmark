@@ -14,4 +14,6 @@ add_subdirectory(HipStdPar)
 # add_subdirectory(DebugInfoPreserve)
 add_subdirectory(UnsafeRustDummy)
 add_subdirectory(DynamicLineCount)
+add_subdirectory(InstMarker)
+add_subdirectory(HeapTracker)
 # UNSAFE-RUST END

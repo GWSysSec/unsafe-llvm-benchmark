@@ -33,6 +33,8 @@ add_llvm_component_library(LLVMPasses
   Instrumentation
   # UNSAFE-RUST BEGIN
   UnsafeRustDummy
+  InstMarker
   DynamicLineCount
+  HeapTracker
   # UNSAFE-RUST END
   )

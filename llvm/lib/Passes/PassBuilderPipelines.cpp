@@ -137,7 +137,9 @@
 #include "llvm/Transforms/Vectorize/VectorCombine.h"
 // UNSAFE-RUST BEGIN
 #include "llvm/Transforms/UnsafeRustDummy/UnsafeRustDummy.h"
+#include "llvm/Transforms/InstMarker/InstMarker.h"
 #include "llvm/Transforms/DynamicLineCount/DynamicLineCount.h"
+#include "llvm/Transforms/HeapTracker/HeapTracker.h"
 // UNSAFE-RUST END
 
 using namespace llvm;
@@ -285,7 +287,19 @@ static cl::opt<bool> UseLoopVersioningLICM(
 static cl::opt<bool> EnableUnsafeRustDummyPass(
   "enable-unsafe-rust-dummy", cl::init(false), cl::Hidden,
   cl::desc("Enable the UnsafeRustDummy pass"));
-// UNSAFE-RUST END
+
+static cl::opt<bool> EnableDynamicLineCount(
+  "enable-dynamic-line-count", cl::init(false), cl::Hidden,
+  cl::desc("Enable the DynamicLineCount pass"));
+
+static cl::opt<bool> EnableInstMarkerPass(
+    "enable-inst-marker-pass", cl::init(false), cl::Hidden,
+    cl::desc("Enable the InstMarker pass"));
+
+static cl::opt<bool> EnableHeapTrackerPass(
+    "enable-unsafe-rust-heap-tracker", cl::init(false), cl::Hidden,
+    cl::desc("Enable the HeapTracker pass"));
+  // UNSAFE-RUST END
 
 namespace llvm {
 cl::opt<bool> EnableMemProfContextDisambiguation(
@@ -1025,10 +1039,10 @@ PassBuilder::buildModuleSimplificationPipeline(OptimizationLevel Level,
   // passed to the compile) to the SamplePGO flag of ICP. This is used to
   // determine whether the new direct calls are annotated with prof metadata.
   // Ideally this should be determined from whether the IR is annotated with
-  // sample profile, and not whether the a sample profile was provided on the
-  // command line. E.g. for flattened profiles where we will not be reloading
-  // the sample profile in the ThinLTO backend, we ideally shouldn't have to
-  // provide the sample profile file.
+  // sample profile, and not whether the a sample profile was provided on
+  // the command line. E.g. for flattened profiles where we will not be
+  // reloading the sample profile in the ThinLTO backend, we ideally shouldn't
+  // have to provide the sample profile file.
   if (Phase == ThinOrFullLTOPhase::ThinLTOPostLink && !LoadSampleProfile)
     MPM.addPass(PGOIndirectCallPromotion(true /* InLTO */, HasSampleProfile));
 
@@ -1507,12 +1521,24 @@ PassBuilder::buildPerModuleDefaultPipeline(OptimizationLevel Level,
 
   ModulePassManager MPM;
 
-  // UNSAFE-RUST BEGIN
-  // Add the UnsafeRustDummy pass to the beginning of the opt pipiline.
+
   FunctionPassManager FPM;
-  FPM.addPass(UnsafeRustDummyPass());
-  FPM.addPass(DynamicLineCountPass());
-  MPM.addPass(createModuleToFunctionPassAdaptor(std::move(FPM)));
+  // UNSAFE-RUST BEGIN
+  if (Level == OptimizationLevel::O0) {
+    // For O0, we want both InstMarker and DynamicLineCount
+    FunctionPassManager InstFPM;
+    InstFPM.addPass(InstMarkerPass());
+    MPM.addPass(createModuleToFunctionPassAdaptor(std::move(InstFPM)));
+    
+    FunctionPassManager DLineFPM;
+    DLineFPM.addPass(DynamicLineCountPass());
+    MPM.addPass(createModuleToFunctionPassAdaptor(std::move(DLineFPM)));
+  } else if (Level == OptimizationLevel::O3 && EnableInstMarkerPass) {
+    // For O3, only run InstMarker when enabled
+    FunctionPassManager InstFPM;
+    InstFPM.addPass(InstMarkerPass());
+    MPM.addPass(createModuleToFunctionPassAdaptor(std::move(InstFPM)));
+  }
   // UNSAFE-RUST END
 
   // Convert @llvm.global.annotations to !annotation metadata.
@@ -1542,6 +1568,14 @@ PassBuilder::buildPerModuleDefaultPipeline(OptimizationLevel Level,
 
   // Emit annotation remarks.
   addAnnotationRemarksPass(MPM);
+
+  // UNSAFE-RUST BEGIN
+  if (EnableHeapTrackerPass) {
+    FunctionPassManager FPM;
+    FPM.addPass(HeapTrackerPass());
+    MPM.addPass(createModuleToFunctionPassAdaptor(std::move(FPM)));
+  }
+  // UNSAFE-RUST END
 
   if (LTOPreLink)
     addRequiredLTOPreLinkPasses(MPM);
@@ -2011,19 +2045,25 @@ ModulePassManager PassBuilder::buildO0DefaultPipeline(OptimizationLevel Level,
 
   ModulePassManager MPM;
 
+  FunctionPassManager FPM;
   // UNSAFE-RUST BEGIN 
-  if (EnableUnsafeRustDummyPass) {
-  // Add the UnsafeRustDummy pass to the beginning of the opt pipiline.
-    FunctionPassManager FPM;
-    FPM.addPass(UnsafeRustDummyPass());
-    MPM.addPass(createModuleToFunctionPassAdaptor(std::move(FPM)));
-  // UNSAFE-RUST END
+  if (EnableInstMarkerPass) {
+    FunctionPassManager InstFPM;
+    InstFPM.addPass(InstMarkerPass());
+    MPM.addPass(createModuleToFunctionPassAdaptor(std::move(InstFPM)));
   }
-
-  // UNSAFE-RUST BEGIN 
-    FunctionPassManager FPM;
-    FPM.addPass(DynamicLineCountPass());
-    MPM.addPass(createModuleToFunctionPassAdaptor(std::move(FPM)));
+  
+  if (EnableDynamicLineCount) {
+    FunctionPassManager DLineFPM;
+    DLineFPM.addPass(DynamicLineCountPass());
+    MPM.addPass(createModuleToFunctionPassAdaptor(std::move(DLineFPM)));
+  }
+  
+  if (EnableUnsafeRustDummyPass) {
+    FunctionPassManager DummyFPM;
+    DummyFPM.addPass(UnsafeRustDummyPass());
+    MPM.addPass(createModuleToFunctionPassAdaptor(std::move(DummyFPM)));
+  }
   // UNSAFE-RUST END
 
   // Perform pseudo probe instrumentation in O0 mode. This is for the
