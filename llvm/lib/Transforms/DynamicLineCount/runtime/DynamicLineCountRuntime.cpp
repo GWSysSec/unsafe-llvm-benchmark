@@ -10,6 +10,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <signal.h>
 
 // Simple data structures to avoid STL dependencies
 #define MAX_FILES 500
@@ -35,9 +36,38 @@ static int file_count = 0;
 static int total_blocks = 0;
 static int total_instructions = 0;
 static int initialized = 0;
+static int enabled = 1;
+static int in_runtime = 0;
+
+// Simple signal handler
+static void handle_signal(int sig) {
+    // Just disable the runtime to prevent crashes
+    enabled = 0;
+}
+
+// Control functions
+RUNTIME_EXPORT void disable_dynamic_line_count(void) {
+    enabled = 0;
+}
+
+RUNTIME_EXPORT void enable_dynamic_line_count(void) {
+    enabled = 1;
+}
+
+// Initialize at runtime
+static void ensure_initialized(void) {
+    if (!initialized) {
+        initialized = 1;
+        
+        // Register minimal signal handler
+        signal(SIGINT, handle_signal);
+    }
+}
 
 // Find or create file entry
 static int find_file(const char* filename) {
+    if (!filename) return -1;
+    
     for (int i = 0; i < file_count; i++) {
         if (files[i].filename && strcmp(files[i].filename, filename) == 0) {
             return i;
@@ -47,13 +77,18 @@ static int find_file(const char* filename) {
 }
 
 static int create_file(const char* filename) {
-    if (file_count >= MAX_FILES) {
-        fprintf(stderr, "Warning: Too many files tracked, limit reached\n");
+    if (!filename || file_count >= MAX_FILES) {
         return -1;
     }
     
     int idx = file_count++;
-    files[idx].filename = strdup(filename);
+    
+    char* name_copy = strdup(filename);
+    if (!name_copy) {
+        return -1;
+    }
+    
+    files[idx].filename = name_copy;
     files[idx].unsafe_count = 0;
     files[idx].exec_count = 0;
     memset(files[idx].unsafe_lines, 0, sizeof(files[idx].unsafe_lines));
@@ -61,63 +96,92 @@ static int create_file(const char* filename) {
     return idx;
 }
 
-// Initialize at runtime
-static void ensure_initialized(void) {
-    if (!initialized) {
-        // Register atexit handler
-        atexit(print_coverage_stats);
-        initialized = 1;
-    }
-}
-
 // Export functions for runtime coverage tracking
 RUNTIME_EXPORT void update_unsafe_line_counter(int64_t LineNum, const char* File) {
-    if (!File || LineNum <= 0 || LineNum >= MAX_LINES_PER_FILE) return;
     ensure_initialized();
+    
+    if (!enabled || !File || LineNum <= 0 || LineNum >= MAX_LINES_PER_FILE || in_runtime) return;
+    
+    // Prevent recursive calls
+    in_runtime = 1;
     
     // Find or create file entry
     int idx = find_file(File);
     if (idx < 0) {
         idx = create_file(File);
     }
-    if (idx < 0) return;
     
-    // Add line if not already tracked
-    FileStats* fs = &files[idx];
-    if (!GET_BIT(fs->unsafe_lines, LineNum)) {
-        SET_BIT(fs->unsafe_lines, LineNum);
-        fs->unsafe_count++;
+    if (idx >= 0 && idx < MAX_FILES) {
+        // Add line if not already tracked
+        FileStats* fs = &files[idx];
+        int bitmap_idx = LineNum / 32;
+        if (bitmap_idx < BITMAP_SIZE && !(fs->unsafe_lines[bitmap_idx] & (1 << (LineNum % 32)))) {
+            fs->unsafe_lines[bitmap_idx] |= (1 << (LineNum % 32));
+            fs->unsafe_count++;
+        }
     }
+    
+    in_runtime = 0;
 }
 
 RUNTIME_EXPORT void mark_unsafe_line_executed(int64_t LineNum, const char* File) {
-    if (!File || LineNum <= 0 || LineNum >= MAX_LINES_PER_FILE) return;
     ensure_initialized();
+    
+    if (!enabled || !File || LineNum <= 0 || LineNum >= MAX_LINES_PER_FILE || in_runtime) return;
+    
+    // Prevent recursive calls
+    in_runtime = 1;
     
     // Find or create file entry
     int idx = find_file(File);
     if (idx < 0) {
         idx = create_file(File);
     }
-    if (idx < 0) return;
     
-    // Mark line as executed
-    FileStats* fs = &files[idx];
-    if (GET_BIT(fs->unsafe_lines, LineNum) && !GET_BIT(fs->exec_map, LineNum)) {
-        SET_BIT(fs->exec_map, LineNum);
-        fs->exec_count++;
+    if (idx >= 0 && idx < MAX_FILES) {
+        // Mark line as executed
+        FileStats* fs = &files[idx];
+        int bitmap_idx = LineNum / 32;
+        if (bitmap_idx < BITMAP_SIZE) {
+            // Check if line is unsafe but not yet executed
+            if ((fs->unsafe_lines[bitmap_idx] & (1 << (LineNum % 32))) && 
+                !(fs->exec_map[bitmap_idx] & (1 << (LineNum % 32)))) {
+                // Mark as executed
+                fs->exec_map[bitmap_idx] |= (1 << (LineNum % 32));
+                fs->exec_count++;
+            }
+        }
     }
+    
+    in_runtime = 0;
 }
 
 RUNTIME_EXPORT void total_unsafe_block_count(int64_t BlockSize) {
+    ensure_initialized();
+    
+    if (!enabled || in_runtime) return;
+    
+    // Prevent recursive calls
+    in_runtime = 1;
+    
+    // Simple counters
     total_blocks++;
     total_instructions += BlockSize;
-    ensure_initialized();
+    
+    in_runtime = 0;
 }
 
 RUNTIME_EXPORT void print_coverage_stats(void) {
+    // Don't do anything if we're disabled
+    if (!enabled) return;
+    
+    // Prevent re-entry 
+    if (in_runtime) return;
+    in_runtime = 1;
+    
     if (file_count == 0) {
         printf("No unsafe code was instrumented or executed.\n");
+        in_runtime = 0;
         return;
     }
     
@@ -166,12 +230,16 @@ RUNTIME_EXPORT void print_coverage_stats(void) {
                 int missing_printed = 0;
                 
                 for (int line = 1; line < MAX_LINES_PER_FILE && missing_printed < 5; line++) {
-                    if (GET_BIT(files[i].unsafe_lines, line) && !GET_BIT(files[i].exec_map, line)) {
-                        printf("%d", line);
-                        missing_printed++;
-                        count++;
-                        if (missing_printed < 5 && count < missing) {
-                            printf(", ");
+                    int bitmap_idx = line / 32;
+                    if (bitmap_idx < BITMAP_SIZE) {
+                        if ((files[i].unsafe_lines[bitmap_idx] & (1 << (line % 32))) && 
+                            !(files[i].exec_map[bitmap_idx] & (1 << (line % 32)))) {
+                            printf("%d", line);
+                            missing_printed++;
+                            count++;
+                            if (missing_printed < 5 && count < missing) {
+                                printf(", ");
+                            }
                         }
                     }
                 }
@@ -214,10 +282,5 @@ RUNTIME_EXPORT void print_coverage_stats(void) {
         }
     }
     
-    // Free memory
-    for (int i = 0; i < file_count; i++) {
-        free((void*)files[i].filename);
-    }
+    in_runtime = 0; // Release re-entry lock
 }
-
-// No weak symbols needed - we already define the functions above

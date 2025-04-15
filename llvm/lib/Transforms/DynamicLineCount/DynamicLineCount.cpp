@@ -28,6 +28,19 @@ PreservedAnalyses DynamicLineCountPass::run(Function &F, FunctionAnalysisManager
   if (F.isDeclaration())
     return PreservedAnalyses::all();
 
+  // Don't instrument functions with certain prefixes
+  // This avoids instrumenting LLVM's own functions
+  std::string FnName = F.getName().str();
+  if (FnName.find("llvm.") == 0 || 
+      FnName.find("__") == 0 || 
+      FnName == "main" || 
+      FnName.find("_ZN") == 0 && (
+         FnName.find("_ZN9__dynamic") == 0 ||
+         FnName.find("_ZN4core") == 0 || 
+         FnName.find("_ZN3std") == 0)) {
+    return PreservedAnalyses::all();
+  }
+
   // Get the unsafe analysis result from InstMarkerPass
   auto &UnsafeResult = AM.getResult<UnsafeAnalysis>(F);
   
@@ -48,6 +61,11 @@ PreservedAnalyses DynamicLineCountPass::run(Function &F, FunctionAnalysisManager
   FunctionType *RuntimeFnTy = FunctionType::get(VoidTy, {Int64Ty, Int8PtrTy}, false);
   FunctionCallee UpdateUnsafeLine = M->getOrInsertFunction(UPDATE_UNSAFE_LINE_FN, RuntimeFnTy);
   FunctionCallee MarkUnsafeLine = M->getOrInsertFunction(MARK_UNSAFE_LINE_FN, RuntimeFnTy);
+  
+  // Get enable/disable runtime functions
+  FunctionType *ControlFnTy = FunctionType::get(VoidTy, {}, false);
+  M->getOrInsertFunction("disable_dynamic_line_count", ControlFnTy);
+  M->getOrInsertFunction("enable_dynamic_line_count", ControlFnTy);
 
   // Set function attributes
   for (auto *RuntimeFn : {

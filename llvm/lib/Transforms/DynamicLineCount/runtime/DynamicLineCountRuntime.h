@@ -28,6 +28,10 @@ RUNTIME_EXPORT void mark_unsafe_line_executed(int64_t LineNum, const char *File)
 RUNTIME_EXPORT void print_coverage_stats(void);
 RUNTIME_EXPORT void total_unsafe_block_count(int64_t BlockSize);
 
+// Control functions
+RUNTIME_EXPORT void disable_dynamic_line_count(void);
+RUNTIME_EXPORT void enable_dynamic_line_count(void);
+
 #ifdef __cplusplus
 }
 #endif
