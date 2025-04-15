@@ -3,11 +3,10 @@ add_llvm_component_library(LLVMInstMarker
 
   DEPENDS
   intrinsics_gen
-  LLVMDynamicLineCountRuntime
   
   LINK_COMPONENTS
   Core
   Support
   IRReader
-  InstCombine
+  Analysis
 )

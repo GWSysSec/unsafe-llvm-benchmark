@@ -1,4 +1,4 @@
-//===-- DynamicLineCountRuntime.cpp - Unified Unsafe Coverage -------------===//
+//===-- DynamicLineCountRuntime.cpp - Lightweight Coverage Runtime --------===//
 //
 // Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
 // See https://llvm.org/LICENSE.txt for license information.
@@ -7,189 +7,231 @@
 //===----------------------------------------------------------------------===//
 
 #include "DynamicLineCountRuntime.h"
-#include <atomic>
-#include <mutex>
-#include <unordered_map>
-#include <unordered_set>
-#include <string>
-#include <cstdio>
-#include <vector>
-#include <algorithm> 
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 
-namespace {
+// Simple data structures to avoid STL dependencies
+#define MAX_FILES 1000
+#define MAX_LINES_PER_FILE 10000
 
-// Thread-local guard to prevent recursion
-thread_local int g_instr_guard = 0;
-
-// Statistics structures
-struct FileStats {
-    std::unordered_set<int64_t> UnsafeLines;
-    std::unordered_set<int64_t> UnsafeExecuted;
-    std::unordered_map<int64_t, size_t> ExecCount;
-
-    void merge(const FileStats &Other) {
-        UnsafeLines.insert(Other.UnsafeLines.begin(), Other.UnsafeLines.end());
-        UnsafeExecuted.insert(Other.UnsafeExecuted.begin(), Other.UnsafeExecuted.end());
-        for (const auto &[Line, Count] : Other.ExecCount) {
-            ExecCount[Line] += Count;
-        }
-    }
-};
+// File tracking structure
+typedef struct {
+    const char* filename;
+    int unsafe_lines[MAX_LINES_PER_FILE];
+    int unsafe_count;
+    int exec_map[MAX_LINES_PER_FILE];
+    int exec_count;
+} FileStats;
 
 // Global state
-std::mutex GlobalMutex;
-std::unordered_map<std::string, FileStats> GlobalStats;
-std::atomic<bool> Initialized{false};
-std::atomic<int> TotalInstrCalls{0};
-std::atomic<int> TotalUnsafeBlocks{0};
-std::atomic<int64_t> TotalUnsafeInstructions{0};
+static FileStats files[MAX_FILES];
+static int file_count = 0;
+static int total_blocks = 0;
+static int total_instructions = 0;
+static int initialized = 0;
 
-// Thread-local buffer for performance
-thread_local struct ThreadLocal {
-    std::unordered_map<std::string, FileStats> LocalStats;
-    
-    void flush() {
-        std::lock_guard<std::mutex> Lock(GlobalMutex);
-        for (auto& [File, Stats] : LocalStats) {
-            GlobalStats[File].merge(Stats);
-        }
-        LocalStats.clear();
-    }
-    
-    ~ThreadLocal() { flush(); }
-} ThreadBuffer;
-
-// Initialization check
-void ensureInitialized() {
-    if (!Initialized.load(std::memory_order_acquire)) {
-        std::lock_guard<std::mutex> Lock(GlobalMutex);
-        if (!Initialized.load(std::memory_order_relaxed)) {
-            std::atexit(print_coverage_stats);
-            Initialized.store(true, std::memory_order_release);
+// Find or create file entry
+static int find_file(const char* filename) {
+    for (int i = 0; i < file_count; i++) {
+        if (files[i].filename && strcmp(files[i].filename, filename) == 0) {
+            return i;
         }
     }
+    return -1;
 }
 
-// Function that definitely won't be optimized away
-__attribute__((noinline, used)) 
-void enforce_side_effect(int64_t line) {
-    g_instr_guard += line;
-    // Compiler barrier
-    asm volatile("" ::: "memory");
+static int create_file(const char* filename) {
+    if (file_count >= MAX_FILES) {
+        fprintf(stderr, "Warning: Too many files tracked, limit reached\n");
+        return -1;
+    }
+    
+    int idx = file_count++;
+    files[idx].filename = strdup(filename);
+    files[idx].unsafe_count = 0;
+    files[idx].exec_count = 0;
+    memset(files[idx].exec_map, 0, sizeof(files[idx].exec_map));
+    return idx;
 }
 
-} // anonymous namespace
+// Initialize at runtime
+static void ensure_initialized(void) {
+    if (!initialized) {
+        // Register atexit handler
+        atexit(print_coverage_stats);
+        initialized = 1;
+    }
+}
 
-extern "C" {
-
-// Update unsafe line counter
-RUNTIME_EXPORT void update_unsafe_line_counter(int64_t LineNum, const char *File) {
+// Export functions for runtime coverage tracking
+RUNTIME_EXPORT void update_unsafe_line_counter(int64_t LineNum, const char* File) {
     if (!File) return;
+    ensure_initialized();
     
-    TotalInstrCalls.fetch_add(1, std::memory_order_relaxed);
-    enforce_side_effect(LineNum);
-    ensureInitialized();
-    ThreadBuffer.LocalStats[File].UnsafeLines.insert(LineNum);
+    // Find or create file entry
+    int idx = find_file(File);
+    if (idx < 0) {
+        idx = create_file(File);
+    }
+    if (idx < 0) return;
+    
+    // Add line if not already tracked
+    FileStats* fs = &files[idx];
+    for (int i = 0; i < fs->unsafe_count; i++) {
+        if (fs->unsafe_lines[i] == LineNum) {
+            return; // Already tracked
+        }
+    }
+    
+    // Add new unsafe line
+    if (fs->unsafe_count < MAX_LINES_PER_FILE) {
+        fs->unsafe_lines[fs->unsafe_count++] = LineNum;
+    }
 }
 
-// Mark unsafe line as executed
-RUNTIME_EXPORT void mark_unsafe_line_executed(int64_t LineNum, const char *File) {
+RUNTIME_EXPORT void mark_unsafe_line_executed(int64_t LineNum, const char* File) {
     if (!File) return;
+    ensure_initialized();
     
-    TotalInstrCalls.fetch_add(1, std::memory_order_relaxed);
-    enforce_side_effect(LineNum);
-    ensureInitialized();
+    // Find or create file entry
+    int idx = find_file(File);
+    if (idx < 0) {
+        idx = create_file(File);
+    }
+    if (idx < 0) return;
     
-    auto &Stats = ThreadBuffer.LocalStats[File];
-    Stats.UnsafeLines.insert(LineNum); // Ensure the line is in UnsafeLines even if update wasn't called
-    Stats.UnsafeExecuted.insert(LineNum);
-    Stats.ExecCount[LineNum]++;
+    // Mark line as executed
+    FileStats* fs = &files[idx];
+    if (LineNum < MAX_LINES_PER_FILE && fs->exec_map[LineNum] == 0) {
+        fs->exec_map[LineNum] = 1;
+        fs->exec_count++;
+    }
 }
 
-// Track total count of unsafe blocks (used by InstMarker)
 RUNTIME_EXPORT void total_unsafe_block_count(int64_t BlockSize) {
-    TotalUnsafeBlocks.fetch_add(1, std::memory_order_relaxed);
-    TotalUnsafeInstructions.fetch_add(BlockSize, std::memory_order_relaxed);
-    enforce_side_effect(BlockSize);
-    ensureInitialized();
+    total_blocks++;
+    total_instructions += BlockSize;
+    ensure_initialized();
 }
 
-// Print coverage statistics at program exit
 RUNTIME_EXPORT void print_coverage_stats(void) {
-    ThreadBuffer.flush();
-    
-    std::lock_guard<std::mutex> Lock(GlobalMutex);
-
-    if (GlobalStats.empty()) {
-        printf("No unsafe lines were instrumented or executed.\n");
+    if (file_count == 0) {
+        printf("No unsafe code was instrumented or executed.\n");
         return;
     }
     
     printf("\n=== Unsafe Code Coverage Report ===\n\n");
     
-    // Calculate file-level statistics
-    size_t TotalUnsafe = 0, TotalExecuted = 0;
-    size_t MaxFileNameLen = 0;
+    // Calculate totals and max filename length
+    int total_unsafe = 0;
+    int total_executed = 0;
+    size_t max_name_len = 10; // Minimum for "File" header
     
-    // Get max filename length for formatting
-    for (const auto &[File, _] : GlobalStats) {
-        MaxFileNameLen = std::max(MaxFileNameLen, File.length());
+    for (int i = 0; i < file_count; i++) {
+        if (files[i].filename) {
+            size_t len = strlen(files[i].filename);
+            if (len > max_name_len) max_name_len = len;
+            
+            // Count executed unsafe lines
+            int executed = 0;
+            for (int j = 0; j < files[i].unsafe_count; j++) {
+                int line = files[i].unsafe_lines[j];
+                if (line < MAX_LINES_PER_FILE && files[i].exec_map[line]) {
+                    executed++;
+                }
+            }
+            
+            total_unsafe += files[i].unsafe_count;
+            total_executed += executed;
+        }
     }
     
-    // First print files with unsafe code
-    printf("%-*s | %10s | %10s | %10s\n", 
-           static_cast<int>(MaxFileNameLen), "File", "Unsafe", "Executed", "Coverage");
-    printf("%s\n", std::string(MaxFileNameLen + 36, '-').c_str());
+    // Print table header
+    printf("%-*s | %10s | %10s | %10s | %10s\n", 
+           (int)max_name_len, "File", "Unsafe", "Executed", "Missing", "Coverage");
     
-    std::vector<std::pair<std::string, FileStats>> SortedStats(
-        GlobalStats.begin(), GlobalStats.end());
+    // Print separator
+    for (size_t i = 0; i < max_name_len + 48; i++) {
+        printf("-");
+    }
+    printf("\n");
     
-    // Sort by coverage percentage (descending)
-    std::sort(SortedStats.begin(), SortedStats.end(), 
-        [](const auto &a, const auto &b) {
-            double aCoverage = a.second.UnsafeLines.empty() ? 0.0 : 
-                static_cast<double>(a.second.UnsafeExecuted.size()) / a.second.UnsafeLines.size();
-            double bCoverage = b.second.UnsafeLines.empty() ? 0.0 : 
-                static_cast<double>(b.second.UnsafeExecuted.size()) / b.second.UnsafeLines.size();
-            return aCoverage > bCoverage;
-        });
-    
-    for (const auto &[File, Stats] : SortedStats) {
-        size_t FileUnsafe = Stats.UnsafeLines.size();
-        size_t FileExecuted = Stats.UnsafeExecuted.size();
-        
-        TotalUnsafe += FileUnsafe;
-        TotalExecuted += FileExecuted;
-        
-        if (FileUnsafe > 0) {
-            double Coverage = static_cast<double>(FileExecuted) * 100.0 / FileUnsafe;
-            printf("%-*s | %10zu | %10zu | %9.2f%%\n", 
-                   static_cast<int>(MaxFileNameLen), File.c_str(), 
-                   FileUnsafe, FileExecuted, Coverage);
+    // Print file data
+    for (int i = 0; i < file_count; i++) {
+        if (files[i].filename && files[i].unsafe_count > 0) {
+            // Count executed unsafe lines
+            int executed = 0;
+            for (int j = 0; j < files[i].unsafe_count; j++) {
+                int line = files[i].unsafe_lines[j];
+                if (line < MAX_LINES_PER_FILE && files[i].exec_map[line]) {
+                    executed++;
+                }
+            }
+            
+            int missing = files[i].unsafe_count - executed;
+            float coverage = files[i].unsafe_count > 0 ? 
+                (float)executed * 100 / files[i].unsafe_count : 0;
+                
+            printf("%-*s | %10d | %10d | %10d | %9.2f%%\n", 
+                   (int)max_name_len, files[i].filename, 
+                   files[i].unsafe_count, executed, missing, coverage);
+            
+            // Show missing lines (up to 5)
+            if (missing > 0) {
+                printf("   Missing lines: ");
+                int count = 0;
+                for (int j = 0; j < files[i].unsafe_count && count < 5; j++) {
+                    int line = files[i].unsafe_lines[j];
+                    if (line < MAX_LINES_PER_FILE && !files[i].exec_map[line]) {
+                        printf("%d", line);
+                        count++;
+                        if (count < 5 && count < missing) {
+                            printf(", ");
+                        }
+                    }
+                }
+                
+                if (missing > 5) {
+                    printf(", ... (%d more)", missing - 5);
+                }
+                printf("\n");
+            }
         }
     }
     
     // Print summary
     printf("\n=== Final Summary ===\n");
-    printf("Total Unsafe Lines: %zu\n", TotalUnsafe);
-    printf("Total Executed: %zu\n", TotalExecuted);
-    double OverallCoverage = TotalUnsafe > 0 ? 
-        (static_cast<double>(TotalExecuted) * 100.0) / TotalUnsafe : 0.0;
-    printf("Overall Coverage: %.2f%%\n", OverallCoverage);
+    printf("Total Unsafe Lines: %d\n", total_unsafe);
+    printf("Total Executed: %d\n", total_executed);
+    int total_missing = total_unsafe - total_executed;
+    printf("Total Missing: %d\n", total_missing);
     
-    // Print unsafe block stats if available
-    int UnsafeBlocks = TotalUnsafeBlocks.load(std::memory_order_relaxed);
-    if (UnsafeBlocks > 0) {
-        printf("Total Unsafe Blocks: %d\n", UnsafeBlocks);
-        printf("Total Unsafe Instructions: %ld\n", 
-               TotalUnsafeInstructions.load(std::memory_order_relaxed));
+    float overall_coverage = total_unsafe > 0 ? 
+        (float)total_executed * 100 / total_unsafe : 0;
+    printf("Overall Coverage: %.2f%%\n", overall_coverage);
+    
+    // Print block stats
+    if (total_blocks > 0) {
+        printf("\n=== Block Statistics ===\n");
+        printf("Total Unsafe Blocks: %d\n", total_blocks);
+        printf("Total Unsafe Instructions: %d\n", total_instructions);
         printf("Avg Instructions Per Block: %.2f\n", 
-               static_cast<double>(TotalUnsafeInstructions.load(std::memory_order_relaxed)) / UnsafeBlocks);
+               (float)total_instructions / total_blocks);
     }
     
-    if (TotalUnsafe > 0 && TotalUnsafe == TotalExecuted) {
-        printf("\n  ✅ All unsafe lines executed!");
+    // Final status
+    if (total_unsafe > 0) {
+        if (total_unsafe == total_executed) {
+            printf("\n  ✅ All unsafe lines executed!\n");
+        } else {
+            printf("\n  ❌ Missing %d unsafe lines (%.2f%% coverage)\n", 
+                   total_missing, overall_coverage);
+        }
+    }
+    
+    // Free memory
+    for (int i = 0; i < file_count; i++) {
+        free((void*)files[i].filename);
     }
 }
-
-} // extern "C"

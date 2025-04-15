@@ -15,36 +15,24 @@
 #include "llvm/IR/DebugInfoMetadata.h"
 #include "llvm/IR/Constants.h"
 #include "llvm/Support/raw_ostream.h"
+#include "llvm/Transforms/Utils/ModuleUtils.h"
 #include <set>
 #include <string>
 #include <algorithm>
 #include <map>
+#include <vector>
 
 using namespace llvm;
 
-// Runtime function name constants - same as InstMarker
-static const char *UPDATE_UNSAFE_LINE_FN = "update_unsafe_line_counter";
-static const char *MARK_UNSAFE_LINE_FN = "mark_unsafe_line_executed";
-
-// Utility functions
-static std::string sanitizeFileName(const std::string &File) {
-  std::string Name = File;
-  std::replace(Name.begin(), Name.end(), '/', '_');
-  std::replace(Name.begin(), Name.end(), '\\', '_');
-  std::replace(Name.begin(), Name.end(), '.', '_');
-  return Name;
-}
-
-static bool isProjectFile(StringRef File) {
-  // Skip standard library and toolchain files
-  if (File.contains("/rustc/") || File.contains("/.cargo/") || 
-      File.contains("/library/"))
-    return false;
-  return true;
-}
-
 PreservedAnalyses DynamicLineCountPass::run(Function &F, FunctionAnalysisManager &AM) {
   if (F.isDeclaration())
+    return PreservedAnalyses::all();
+
+  // Get the unsafe analysis result from InstMarkerPass
+  auto &UnsafeResult = AM.getResult<UnsafeAnalysis>(F);
+  
+  // If there are no unsafe instructions, nothing to do
+  if (UnsafeResult.TotalUnsafeInst == 0)
     return PreservedAnalyses::all();
 
   Module *M = F.getParent();
@@ -73,73 +61,98 @@ PreservedAnalyses DynamicLineCountPass::run(Function &F, FunctionAnalysisManager
     }
   }
 
-  // Track unique source locations to avoid duplicate instrumentation
-  std::set<std::pair<std::string, unsigned>> InstrumentedLines;
-  
-  // First, collect all unsafe instructions and their locations
-  struct UnsafeInstrInfo {
-    Instruction *Inst;
-    StringRef File;
-    unsigned Line;
-  };
-  
-  std::vector<UnsafeInstrInfo> UnsafeInsts;
-  std::map<BasicBlock*, std::vector<Instruction*>> UnsafeInstsByBlock;
-  
-  int totalUnsafeInst = 0;
   int instrumentedCount = 0;
   
-  for (Instruction &I : instructions(F)) {
-    if (!I.getMetadata("unsafe_inst"))
+  // STEP 1: First register all unsafe lines at module initialization
+  // Create a module constructor to register all unsafe lines before runtime
+  std::vector<std::pair<int64_t, std::string>> UnsafeLineRegistry;
+  
+  // Collect all unsafe lines to register
+  for (const auto &Info : UnsafeResult.UnsafeInsts) {
+    // Only include each line once
+    auto Key = std::make_pair(Info.File.str(), Info.Line);
+    if (!UnsafeResult.InstrumentedLines.insert(Key).second)
       continue;
       
-    totalUnsafeInst++;
-    
-    DebugLoc DL = I.getDebugLoc();
-    if (!DL)
-      continue;
-      
-    const DILocation *Loc = DL.get();
-    StringRef File = Loc->getFilename();
-    if (File.empty() || !isProjectFile(File))
-      continue;
-      
-    unsigned Line = Loc->getLine();
-    
-    UnsafeInsts.push_back({&I, File, Line});
-    UnsafeInstsByBlock[I.getParent()].push_back(&I);
+    UnsafeLineRegistry.push_back({Info.Line, Info.File.str()});
   }
   
-  // Process each unsafe instruction for line tracking
-  for (const auto &Info : UnsafeInsts) {
-    auto Key = std::make_pair(Info.File.str(), Info.Line);
+  // Only output if there are many unsafe lines
+  if (UnsafeLineRegistry.size() > 10) {
+    errs() << "[DynamicLineCount] Registering " << UnsafeLineRegistry.size() << " unsafe lines in " 
+           << F.getName() << "\n";
+  }
+  
+  // Create a module constructor to register all unsafe lines
+  if (!UnsafeLineRegistry.empty()) {
+    // Create a static registration function for this module
+    std::string RegistrationFnName = "unsafe_line_register_" + 
+                                      F.getName().str() + "_" +
+                                      std::to_string(UnsafeLineRegistry.size());
     
-    // Only instrument each line once
-    if (!InstrumentedLines.insert(Key).second)
-      continue;
+    FunctionType *RegFnTy = FunctionType::get(VoidTy, false);
+    Function *RegistrationFn = Function::Create(
+      RegFnTy, GlobalValue::InternalLinkage, RegistrationFnName, M);
     
+    // Create a basic block and builder
+    BasicBlock *EntryBB = BasicBlock::Create(Ctx, "entry", RegistrationFn);
+    IRBuilder<> RegBuilder(EntryBB);
+    
+    // Create a global string for each file
+    std::map<std::string, Value*> FileGlobals;
+    
+    // Add calls to update_unsafe_line_counter for each unsafe line
+    for (const auto &[Line, File] : UnsafeLineRegistry) {
+      // Create or reuse global string for File
+      Value *FileArg;
+      if (FileGlobals.find(File) == FileGlobals.end()) {
+        std::string GlobalName = "unsafe_reg_str_" + UnsafeAnalysisResult::sanitizeFileName(File);
+        auto *FileConstant = ConstantDataArray::getString(Ctx, File, true);
+        GlobalVariable *GV = new GlobalVariable(
+          *M, FileConstant->getType(), /*isConstant=*/true,
+          GlobalValue::InternalLinkage, FileConstant, GlobalName
+        );
+        GV->setUnnamedAddr(GlobalValue::UnnamedAddr::Global);
+        FileGlobals[File] = RegBuilder.CreateBitCast(GV, Int8PtrTy);
+      }
+      FileArg = FileGlobals[File];
+      
+      // Insert call to register this unsafe line
+      RegBuilder.CreateCall(UpdateUnsafeLine, {
+        ConstantInt::get(Int64Ty, Line),
+        FileArg
+      });
+    }
+    
+    // Add a return instruction
+    RegBuilder.CreateRetVoid();
+    
+    // Add this function to the module's global constructors
+    appendToGlobalCtors(*M, RegistrationFn, 0);
+    
+    Modified = true;
+  }
+  
+  // STEP 2: Process each unsafe instruction to insert runtime tracking
+  for (const auto &Info : UnsafeResult.UnsafeInsts) {
     Instruction *UnsafeInst = Info.Inst;
     BasicBlock *BB = UnsafeInst->getParent();
     
-    // Pick a safe insertion point
-    IRBuilder<> Builder(Ctx);
-    if (isa<PHINode>(*UnsafeInst) || isa<LandingPadInst>(*UnsafeInst)) {
-      Instruction *InsertPoint = nullptr;
+    // Skip PHI nodes with no appropriate insertion point
+    if ((isa<PHINode>(*UnsafeInst) || isa<LandingPadInst>(*UnsafeInst))) {
+      bool HasInsertPoint = false;
       for (Instruction &I : *BB) {
         if (!isa<PHINode>(I) && !isa<LandingPadInst>(I)) {
-          InsertPoint = &I;
+          HasInsertPoint = true;
           break;
         }
       }
-      if (!InsertPoint)
+      if (!HasInsertPoint)
         continue;
-      Builder.SetInsertPoint(InsertPoint);
-    } else {
-      Builder.SetInsertPoint(UnsafeInst);
     }
     
-    // Create or reuse a global string for File
-    std::string GlobalName = "unsafe_str_" + sanitizeFileName(Info.File.str());
+    // Create or reuse a global string for the file name
+    std::string GlobalName = "unsafe_str_" + UnsafeAnalysisResult::sanitizeFileName(Info.File.str());
     GlobalVariable *GV = M->getNamedGlobal(GlobalName);
     if (!GV) {
       auto *FileConstant = ConstantDataArray::getString(Ctx, Info.File.str(), true);
@@ -149,14 +162,24 @@ PreservedAnalyses DynamicLineCountPass::run(Function &F, FunctionAnalysisManager
       );
       GV->setUnnamedAddr(GlobalValue::UnnamedAddr::Global);
     }
+    
+    // Pick an appropriate insertion point for the execution tracking
+    IRBuilder<> Builder(Ctx);
+    if (isa<PHINode>(*UnsafeInst) || isa<LandingPadInst>(*UnsafeInst)) {
+      // For PHI nodes, insert after the first non-PHI instruction
+      for (Instruction &I : *BB) {
+        if (!isa<PHINode>(I) && !isa<LandingPadInst>(I)) {
+          Builder.SetInsertPoint(&I);
+          break;
+        }
+      }
+    } else {
+      // For regular instructions, insert at the instruction
+      Builder.SetInsertPoint(UnsafeInst);
+    }
+    
+    // Insert call to mark_unsafe_line_executed when this line is executed
     Value *FileArg = Builder.CreateBitCast(GV, Int8PtrTy);
-    
-    // Insert calls to runtime functions
-    Builder.CreateCall(UpdateUnsafeLine, {
-      ConstantInt::get(Int64Ty, Info.Line),
-      FileArg
-    });
-    
     Builder.CreateCall(MarkUnsafeLine, {
       ConstantInt::get(Int64Ty, Info.Line),
       FileArg
@@ -166,12 +189,10 @@ PreservedAnalyses DynamicLineCountPass::run(Function &F, FunctionAnalysisManager
     Modified = true;
   }
   
-  // Output summary if any unsafe instructions were found
-  if (totalUnsafeInst > 0) {
-    // Use llvm's errs() stream for minimal output
-    errs() << "[DynamicLineCount] Function: " << F.getName() 
-           << " - Unsafe: " << totalUnsafeInst 
-           << ", Instrumented: " << instrumentedCount << "\n";
+  // Only output summary for functions with significant instrumentation
+  if (instrumentedCount > 10) {
+    errs() << "[DynamicLineCount] Instrumented " << instrumentedCount 
+           << " lines in " << F.getName() << "\n";
   }
   
   return Modified ? PreservedAnalyses::none() : PreservedAnalyses::all();

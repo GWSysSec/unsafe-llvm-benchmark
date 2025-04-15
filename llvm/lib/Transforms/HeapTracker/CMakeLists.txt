@@ -1,7 +1,9 @@
 add_llvm_component_library(LLVMHeapTracker
-    HeapTracker.cpp
+  HeapTracker.cpp
 
-    LINK_COMPONENTS
-    Core
-    Analysis
-    )
+  LINK_COMPONENTS
+  Core
+  Analysis
+  Support
+  InstMarker
+)

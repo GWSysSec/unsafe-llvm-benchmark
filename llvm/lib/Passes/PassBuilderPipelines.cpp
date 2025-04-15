@@ -1524,6 +1524,11 @@ PassBuilder::buildPerModuleDefaultPipeline(OptimizationLevel Level,
 
   FunctionPassManager FPM;
   // UNSAFE-RUST BEGIN
+  // Always run UnsafeAnalysisPass first as it's required by other passes
+  FunctionPassManager UnsafeFPM;
+  UnsafeFPM.addPass(UnsafeAnalysisPass());
+  MPM.addPass(createModuleToFunctionPassAdaptor(std::move(UnsafeFPM)));
+  
   if (Level == OptimizationLevel::O0) {
     // For O0, we want both InstMarker and DynamicLineCount
     FunctionPassManager InstFPM;
@@ -1533,11 +1538,20 @@ PassBuilder::buildPerModuleDefaultPipeline(OptimizationLevel Level,
     FunctionPassManager DLineFPM;
     DLineFPM.addPass(DynamicLineCountPass());
     MPM.addPass(createModuleToFunctionPassAdaptor(std::move(DLineFPM)));
-  } else if (Level == OptimizationLevel::O3 && EnableInstMarkerPass) {
-    // For O3, only run InstMarker when enabled
-    FunctionPassManager InstFPM;
-    InstFPM.addPass(InstMarkerPass());
-    MPM.addPass(createModuleToFunctionPassAdaptor(std::move(InstFPM)));
+  } else if (Level == OptimizationLevel::O3) {
+    // For O3, run InstMarker when enabled
+    if (EnableInstMarkerPass) {
+      FunctionPassManager InstFPM;
+      InstFPM.addPass(InstMarkerPass());
+      MPM.addPass(createModuleToFunctionPassAdaptor(std::move(InstFPM)));
+    }
+    
+    // And run HeapTracker when enabled
+    if (EnableHeapTrackerPass) {
+      FunctionPassManager HeapTrackerFPM;
+      HeapTrackerFPM.addPass(HeapTrackerPass());
+      MPM.addPass(createModuleToFunctionPassAdaptor(std::move(HeapTrackerFPM)));
+    }
   }
   // UNSAFE-RUST END
 
@@ -2046,7 +2060,13 @@ ModulePassManager PassBuilder::buildO0DefaultPipeline(OptimizationLevel Level,
   ModulePassManager MPM;
 
   FunctionPassManager FPM;
-  // UNSAFE-RUST BEGIN 
+  // UNSAFE-RUST BEGIN
+  // First, run UnsafeAnalysisPass for foundational analysis
+  FunctionPassManager UnsafeFPM;
+  UnsafeFPM.addPass(UnsafeAnalysisPass());
+  MPM.addPass(createModuleToFunctionPassAdaptor(std::move(UnsafeFPM)));
+  
+  // For O0, always run InstMarker and DynamicLineCount, controlled by flags 
   if (EnableInstMarkerPass) {
     FunctionPassManager InstFPM;
     InstFPM.addPass(InstMarkerPass());
