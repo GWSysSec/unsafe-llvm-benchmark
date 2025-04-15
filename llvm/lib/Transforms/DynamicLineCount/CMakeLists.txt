@@ -1,12 +1,12 @@
-# Add the runtime subdirectory
-add_subdirectory(runtime)
-
+# Most minimal approach: build the pass with runtime code included directly
 add_llvm_component_library(LLVMDynamicLineCount
+  # Main pass source
   DynamicLineCount.cpp
+  # Include runtime code directly in the pass
+  runtime/DynamicLineCountRuntime.cpp
 
   DEPENDS
   intrinsics_gen
-  LLVMDynamicLineCountRuntime
   
   LINK_COMPONENTS
   Core
@@ -16,13 +16,8 @@ add_llvm_component_library(LLVMDynamicLineCount
   InstMarker
 )
 
-# Explicitly link with the runtime library
-target_link_libraries(LLVMDynamicLineCount PRIVATE
-  LLVMDynamicLineCountRuntime
-)
-
-# Make sure the pass can find runtime symbols
+# Make runtime symbols visible
 set_target_properties(LLVMDynamicLineCount PROPERTIES
   ENABLE_EXPORTS ON
-  INTERFACE_LINK_LIBRARIES "LLVMDynamicLineCountRuntime"
+  POSITION_INDEPENDENT_CODE ON
 )

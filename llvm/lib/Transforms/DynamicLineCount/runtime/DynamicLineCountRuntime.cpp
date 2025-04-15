@@ -12,16 +12,21 @@
 #include <string.h>
 
 // Simple data structures to avoid STL dependencies
-#define MAX_FILES 1000
-#define MAX_LINES_PER_FILE 10000
+#define MAX_FILES 500
+#define MAX_LINES_PER_FILE 65536
+
+// Bitmap helpers for more efficient storage
+#define BITMAP_SIZE (MAX_LINES_PER_FILE / 32)
+#define SET_BIT(a, b) ((a)[(b)/32] |= (1 << ((b) % 32)))
+#define GET_BIT(a, b) (((a)[(b)/32] >> ((b) % 32)) & 1)
 
 // File tracking structure
 typedef struct {
-    const char* filename;
-    int unsafe_lines[MAX_LINES_PER_FILE];
-    int unsafe_count;
-    int exec_map[MAX_LINES_PER_FILE];
-    int exec_count;
+    const char* filename;           // Source file path
+    uint32_t unsafe_lines[BITMAP_SIZE]; // Bitmap of unsafe lines
+    uint32_t exec_map[BITMAP_SIZE];     // Bitmap of executed lines
+    int unsafe_count;               // Total unsafe lines in file
+    int exec_count;                 // Total executed unsafe lines
 } FileStats;
 
 // Global state
@@ -51,6 +56,7 @@ static int create_file(const char* filename) {
     files[idx].filename = strdup(filename);
     files[idx].unsafe_count = 0;
     files[idx].exec_count = 0;
+    memset(files[idx].unsafe_lines, 0, sizeof(files[idx].unsafe_lines));
     memset(files[idx].exec_map, 0, sizeof(files[idx].exec_map));
     return idx;
 }
@@ -66,7 +72,7 @@ static void ensure_initialized(void) {
 
 // Export functions for runtime coverage tracking
 RUNTIME_EXPORT void update_unsafe_line_counter(int64_t LineNum, const char* File) {
-    if (!File) return;
+    if (!File || LineNum <= 0 || LineNum >= MAX_LINES_PER_FILE) return;
     ensure_initialized();
     
     // Find or create file entry
@@ -78,20 +84,14 @@ RUNTIME_EXPORT void update_unsafe_line_counter(int64_t LineNum, const char* File
     
     // Add line if not already tracked
     FileStats* fs = &files[idx];
-    for (int i = 0; i < fs->unsafe_count; i++) {
-        if (fs->unsafe_lines[i] == LineNum) {
-            return; // Already tracked
-        }
-    }
-    
-    // Add new unsafe line
-    if (fs->unsafe_count < MAX_LINES_PER_FILE) {
-        fs->unsafe_lines[fs->unsafe_count++] = LineNum;
+    if (!GET_BIT(fs->unsafe_lines, LineNum)) {
+        SET_BIT(fs->unsafe_lines, LineNum);
+        fs->unsafe_count++;
     }
 }
 
 RUNTIME_EXPORT void mark_unsafe_line_executed(int64_t LineNum, const char* File) {
-    if (!File) return;
+    if (!File || LineNum <= 0 || LineNum >= MAX_LINES_PER_FILE) return;
     ensure_initialized();
     
     // Find or create file entry
@@ -103,8 +103,8 @@ RUNTIME_EXPORT void mark_unsafe_line_executed(int64_t LineNum, const char* File)
     
     // Mark line as executed
     FileStats* fs = &files[idx];
-    if (LineNum < MAX_LINES_PER_FILE && fs->exec_map[LineNum] == 0) {
-        fs->exec_map[LineNum] = 1;
+    if (GET_BIT(fs->unsafe_lines, LineNum) && !GET_BIT(fs->exec_map, LineNum)) {
+        SET_BIT(fs->exec_map, LineNum);
         fs->exec_count++;
     }
 }
@@ -126,24 +126,15 @@ RUNTIME_EXPORT void print_coverage_stats(void) {
     // Calculate totals and max filename length
     int total_unsafe = 0;
     int total_executed = 0;
-    size_t max_name_len = 10; // Minimum for "File" header
+    size_t max_name_len = 20; // Minimum for "File" header
     
     for (int i = 0; i < file_count; i++) {
         if (files[i].filename) {
             size_t len = strlen(files[i].filename);
             if (len > max_name_len) max_name_len = len;
             
-            // Count executed unsafe lines
-            int executed = 0;
-            for (int j = 0; j < files[i].unsafe_count; j++) {
-                int line = files[i].unsafe_lines[j];
-                if (line < MAX_LINES_PER_FILE && files[i].exec_map[line]) {
-                    executed++;
-                }
-            }
-            
             total_unsafe += files[i].unsafe_count;
-            total_executed += executed;
+            total_executed += files[i].exec_count;
         }
     }
     
@@ -160,33 +151,26 @@ RUNTIME_EXPORT void print_coverage_stats(void) {
     // Print file data
     for (int i = 0; i < file_count; i++) {
         if (files[i].filename && files[i].unsafe_count > 0) {
-            // Count executed unsafe lines
-            int executed = 0;
-            for (int j = 0; j < files[i].unsafe_count; j++) {
-                int line = files[i].unsafe_lines[j];
-                if (line < MAX_LINES_PER_FILE && files[i].exec_map[line]) {
-                    executed++;
-                }
-            }
-            
-            int missing = files[i].unsafe_count - executed;
+            int missing = files[i].unsafe_count - files[i].exec_count;
             float coverage = files[i].unsafe_count > 0 ? 
-                (float)executed * 100 / files[i].unsafe_count : 0;
+                (float)files[i].exec_count * 100 / files[i].unsafe_count : 0;
                 
             printf("%-*s | %10d | %10d | %10d | %9.2f%%\n", 
                    (int)max_name_len, files[i].filename, 
-                   files[i].unsafe_count, executed, missing, coverage);
+                   files[i].unsafe_count, files[i].exec_count, missing, coverage);
             
             // Show missing lines (up to 5)
             if (missing > 0) {
                 printf("   Missing lines: ");
                 int count = 0;
-                for (int j = 0; j < files[i].unsafe_count && count < 5; j++) {
-                    int line = files[i].unsafe_lines[j];
-                    if (line < MAX_LINES_PER_FILE && !files[i].exec_map[line]) {
+                int missing_printed = 0;
+                
+                for (int line = 1; line < MAX_LINES_PER_FILE && missing_printed < 5; line++) {
+                    if (GET_BIT(files[i].unsafe_lines, line) && !GET_BIT(files[i].exec_map, line)) {
                         printf("%d", line);
+                        missing_printed++;
                         count++;
-                        if (count < 5 && count < missing) {
+                        if (missing_printed < 5 && count < missing) {
                             printf(", ");
                         }
                     }
@@ -235,3 +219,5 @@ RUNTIME_EXPORT void print_coverage_stats(void) {
         free((void*)files[i].filename);
     }
 }
+
+// No weak symbols needed - we already define the functions above
