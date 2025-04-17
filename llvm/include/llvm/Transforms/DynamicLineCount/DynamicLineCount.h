@@ -33,9 +33,9 @@ namespace llvm {
 
 // Runtime function name constants specific to DynamicLineCount
 // These must match the exported symbols in the runtime library
-static const char *UPDATE_UNSAFE_LINE_FN = "update_unsafe_line_counter";
-static const char *MARK_UNSAFE_LINE_FN = "mark_unsafe_line_executed";
-static const char *BLOCK_COUNT_FN = "total_unsafe_block_count";
+inline constexpr const char *UPDATE_UNSAFE_LINE_FN = "update_unsafe_line_counter";
+inline constexpr const char *MARK_UNSAFE_LINE_FN = "mark_unsafe_line_executed";
+// Block count function directly referenced in cpp file
 
 /// DynamicLineCountPass - This pass instruments code with calls to the runtime 
 /// library to track execution of unsafe Rust code at the line level.

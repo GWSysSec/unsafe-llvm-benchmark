@@ -16,55 +16,26 @@
 #define MAX_FILES 500
 #define MAX_LINES_PER_FILE 65536
 
-// Bitmap helpers for more efficient storage
-#define BITMAP_SIZE (MAX_LINES_PER_FILE / 32)
-#define SET_BIT(a, b) ((a)[(b)/32] |= (1 << ((b) % 32)))
-#define GET_BIT(a, b) (((a)[(b)/32] >> ((b) % 32)) & 1)
+// Forward declaration
+static void print_coverage_on_exit(void);
 
 // File tracking structure
 typedef struct {
     const char* filename;           // Source file path
-    uint32_t unsafe_lines[BITMAP_SIZE]; // Bitmap of unsafe lines
-    uint32_t exec_map[BITMAP_SIZE];     // Bitmap of executed lines
+    unsigned int unsafe_lines[MAX_LINES_PER_FILE/32]; // Bitmap of unsafe lines
+    unsigned int exec_map[MAX_LINES_PER_FILE/32];     // Bitmap of executed lines
     int unsafe_count;               // Total unsafe lines in file
     int exec_count;                 // Total executed unsafe lines
 } FileStats;
 
-// Global state
+// Global state 
 static FileStats files[MAX_FILES];
 static int file_count = 0;
 static int total_blocks = 0;
 static int total_instructions = 0;
-static int initialized = 0;
-static int enabled = 1;
-static int in_runtime = 0;
+static int runtime_initialized = 0;
 
-// Simple signal handler
-static void handle_signal(int sig) {
-    // Just disable the runtime to prevent crashes
-    enabled = 0;
-}
-
-// Control functions
-RUNTIME_EXPORT void disable_dynamic_line_count(void) {
-    enabled = 0;
-}
-
-RUNTIME_EXPORT void enable_dynamic_line_count(void) {
-    enabled = 1;
-}
-
-// Initialize at runtime
-static void ensure_initialized(void) {
-    if (!initialized) {
-        initialized = 1;
-        
-        // Register minimal signal handler
-        signal(SIGINT, handle_signal);
-    }
-}
-
-// Find or create file entry
+// Simple find_file function
 static int find_file(const char* filename) {
     if (!filename) return -1;
     
@@ -76,13 +47,13 @@ static int find_file(const char* filename) {
     return -1;
 }
 
+// Create file entry
 static int create_file(const char* filename) {
     if (!filename || file_count >= MAX_FILES) {
         return -1;
     }
     
     int idx = file_count++;
-    
     char* name_copy = strdup(filename);
     if (!name_copy) {
         return -1;
@@ -96,14 +67,25 @@ static int create_file(const char* filename) {
     return idx;
 }
 
+// No longer need ensure_initialized since we use constructor attribute
+
+// One-time initialization at runtime, called through constructor attribute
+static void __attribute__((constructor)) runtime_init(void) {
+    static int registered = 0;
+    if (!registered) {
+        registered = 1;
+        runtime_initialized = 1;
+        atexit(print_coverage_on_exit);
+    }
+}
+
 // Export functions for runtime coverage tracking
 RUNTIME_EXPORT void update_unsafe_line_counter(int64_t LineNum, const char* File) {
-    ensure_initialized();
+    // No need to call ensure_initialized() in each function
+    // The constructor attribute ensures initialization happens before first use
     
-    if (!enabled || !File || LineNum <= 0 || LineNum >= MAX_LINES_PER_FILE || in_runtime) return;
-    
-    // Prevent recursive calls
-    in_runtime = 1;
+    if (!File || LineNum <= 0 || LineNum >= MAX_LINES_PER_FILE) 
+        return;
     
     // Find or create file entry
     int idx = find_file(File);
@@ -115,22 +97,21 @@ RUNTIME_EXPORT void update_unsafe_line_counter(int64_t LineNum, const char* File
         // Add line if not already tracked
         FileStats* fs = &files[idx];
         int bitmap_idx = LineNum / 32;
-        if (bitmap_idx < BITMAP_SIZE && !(fs->unsafe_lines[bitmap_idx] & (1 << (LineNum % 32)))) {
-            fs->unsafe_lines[bitmap_idx] |= (1 << (LineNum % 32));
-            fs->unsafe_count++;
+        int bit_offset = LineNum % 32;
+        if (bitmap_idx < (MAX_LINES_PER_FILE/32)) {
+            if (!(fs->unsafe_lines[bitmap_idx] & (1U << bit_offset))) {
+                fs->unsafe_lines[bitmap_idx] |= (1U << bit_offset);
+                fs->unsafe_count++;
+            }
         }
     }
-    
-    in_runtime = 0;
 }
 
 RUNTIME_EXPORT void mark_unsafe_line_executed(int64_t LineNum, const char* File) {
-    ensure_initialized();
+    // No need to call ensure_initialized() in each function
     
-    if (!enabled || !File || LineNum <= 0 || LineNum >= MAX_LINES_PER_FILE || in_runtime) return;
-    
-    // Prevent recursive calls
-    in_runtime = 1;
+    if (!File || LineNum <= 0 || LineNum >= MAX_LINES_PER_FILE) 
+        return;
     
     // Find or create file entry
     int idx = find_file(File);
@@ -142,46 +123,35 @@ RUNTIME_EXPORT void mark_unsafe_line_executed(int64_t LineNum, const char* File)
         // Mark line as executed
         FileStats* fs = &files[idx];
         int bitmap_idx = LineNum / 32;
-        if (bitmap_idx < BITMAP_SIZE) {
+        int bit_offset = LineNum % 32;
+        if (bitmap_idx < (MAX_LINES_PER_FILE/32)) {
             // Check if line is unsafe but not yet executed
-            if ((fs->unsafe_lines[bitmap_idx] & (1 << (LineNum % 32))) && 
-                !(fs->exec_map[bitmap_idx] & (1 << (LineNum % 32)))) {
+            if ((fs->unsafe_lines[bitmap_idx] & (1U << bit_offset)) && 
+                !(fs->exec_map[bitmap_idx] & (1U << bit_offset))) {
                 // Mark as executed
-                fs->exec_map[bitmap_idx] |= (1 << (LineNum % 32));
+                fs->exec_map[bitmap_idx] |= (1U << bit_offset);
                 fs->exec_count++;
             }
         }
     }
-    
-    in_runtime = 0;
 }
 
 RUNTIME_EXPORT void total_unsafe_block_count(int64_t BlockSize) {
-    ensure_initialized();
-    
-    if (!enabled || in_runtime) return;
-    
-    // Prevent recursive calls
-    in_runtime = 1;
+    // No need to call ensure_initialized() in each function
     
     // Simple counters
     total_blocks++;
     total_instructions += BlockSize;
-    
-    in_runtime = 0;
+}
+
+// This wrapper function is registered with atexit
+static void print_coverage_on_exit(void) {
+    print_coverage_stats();
 }
 
 RUNTIME_EXPORT void print_coverage_stats(void) {
-    // Don't do anything if we're disabled
-    if (!enabled) return;
-    
-    // Prevent re-entry 
-    if (in_runtime) return;
-    in_runtime = 1;
-    
     if (file_count == 0) {
         printf("No unsafe code was instrumented or executed.\n");
-        in_runtime = 0;
         return;
     }
     
@@ -231,9 +201,10 @@ RUNTIME_EXPORT void print_coverage_stats(void) {
                 
                 for (int line = 1; line < MAX_LINES_PER_FILE && missing_printed < 5; line++) {
                     int bitmap_idx = line / 32;
-                    if (bitmap_idx < BITMAP_SIZE) {
-                        if ((files[i].unsafe_lines[bitmap_idx] & (1 << (line % 32))) && 
-                            !(files[i].exec_map[bitmap_idx] & (1 << (line % 32)))) {
+                    int bit_offset = line % 32;
+                    if (bitmap_idx < (MAX_LINES_PER_FILE/32)) {
+                        if ((files[i].unsafe_lines[bitmap_idx] & (1U << bit_offset)) && 
+                            !(files[i].exec_map[bitmap_idx] & (1U << bit_offset))) {
                             printf("%d", line);
                             missing_printed++;
                             count++;
@@ -281,6 +252,4 @@ RUNTIME_EXPORT void print_coverage_stats(void) {
                    total_missing, overall_coverage);
         }
     }
-    
-    in_runtime = 0; // Release re-entry lock
 }

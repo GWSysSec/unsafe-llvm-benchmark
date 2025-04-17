@@ -62,15 +62,17 @@ PreservedAnalyses DynamicLineCountPass::run(Function &F, FunctionAnalysisManager
   FunctionCallee UpdateUnsafeLine = M->getOrInsertFunction(UPDATE_UNSAFE_LINE_FN, RuntimeFnTy);
   FunctionCallee MarkUnsafeLine = M->getOrInsertFunction(MARK_UNSAFE_LINE_FN, RuntimeFnTy);
   
-  // Get enable/disable runtime functions
-  FunctionType *ControlFnTy = FunctionType::get(VoidTy, {}, false);
-  M->getOrInsertFunction("disable_dynamic_line_count", ControlFnTy);
-  M->getOrInsertFunction("enable_dynamic_line_count", ControlFnTy);
+  // Add block count function too
+  FunctionType *BlockFnTy = FunctionType::get(VoidTy, {Int64Ty}, false);
+  FunctionCallee BlockCountFn = M->getOrInsertFunction("total_unsafe_block_count", BlockFnTy);
+  
+  // No control functions needed
 
-  // Set function attributes
+  // Set function attributes for runtime calls
   for (auto *RuntimeFn : {
       dyn_cast<Function>(UpdateUnsafeLine.getCallee()),
-      dyn_cast<Function>(MarkUnsafeLine.getCallee())}) {
+      dyn_cast<Function>(MarkUnsafeLine.getCallee()),
+      dyn_cast<Function>(BlockCountFn.getCallee())}) {
     if (RuntimeFn) {
       RuntimeFn->removeFnAttr(Attribute::ReadNone);
       RuntimeFn->removeFnAttr(Attribute::ReadOnly);
@@ -115,6 +117,10 @@ PreservedAnalyses DynamicLineCountPass::run(Function &F, FunctionAnalysisManager
     // Create a basic block and builder
     BasicBlock *EntryBB = BasicBlock::Create(Ctx, "entry", RegistrationFn);
     IRBuilder<> RegBuilder(EntryBB);
+    
+    // Add call to register the block count - use UnsafeInsts size as proxy for block count
+    Value *BlockSizeArg = ConstantInt::get(Int64Ty, UnsafeResult.UnsafeInsts.size());
+    RegBuilder.CreateCall(BlockCountFn, BlockSizeArg);
     
     // Create a global string for each file
     std::map<std::string, Value*> FileGlobals;
