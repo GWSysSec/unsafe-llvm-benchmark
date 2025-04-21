@@ -140,6 +140,9 @@
 #include "llvm/Transforms/InstMarker/InstMarker.h"
 #include "llvm/Transforms/DynamicLineCount/DynamicLineCount.h"
 #include "llvm/Transforms/HeapTracker/HeapTracker.h"
+#include "llvm/Transforms/DynamicUnsafeCount/InlineMarker.h"
+#include "llvm/Transforms/DynamicUnsafeCount/InlineCountUnsafe.h"
+#include "llvm/Transforms/DynamicUnsafeCount/FunctionCount.h"
 // UNSAFE-RUST END
 
 using namespace llvm;
@@ -299,7 +302,19 @@ static cl::opt<bool> EnableInstMarkerPass(
 static cl::opt<bool> EnableHeapTrackerPass(
     "enable-unsafe-rust-heap-tracker", cl::init(false), cl::Hidden,
     cl::desc("Enable the HeapTracker pass"));
-  // UNSAFE-RUST END
+
+static cl::opt<bool> EnableInlineMarker(
+  "enable-inline-marker-unsafe", cl::init(false), cl::Hidden,
+  cl::desc("Enable the InlineMarker pass"));
+
+static cl::opt<bool> EnableInlineCountUnsafe(
+  "enable-inline-unsafe-rust", cl::init(false), cl::Hidden,
+  cl::desc("Enable the InlineCountUnsafe Pass"));
+
+static cl::opt<bool> EnableFunctionCount(
+  "enable-function-count", cl::init(false), cl::Hidden,
+  cl::desc("Enable the FunctionCount Pass"));
+// UNSAFE-RUST END
 
 namespace llvm {
 cl::opt<bool> EnableMemProfContextDisambiguation(
@@ -1528,6 +1543,13 @@ PassBuilder::buildPerModuleDefaultPipeline(OptimizationLevel Level,
   FunctionPassManager UnsafeFPM;
   UnsafeFPM.addPass(UnsafeAnalysisPass());
   MPM.addPass(createModuleToFunctionPassAdaptor(std::move(UnsafeFPM)));
+
+  if (EnableInlineMarker) {
+    // Add the InlineMarker pass to the beginning of the opt pipiline.
+    FunctionPassManager FPM;
+    FPM.addPass(InlineMarker());
+    MPM.addPass(createModuleToFunctionPassAdaptor(std::move(FPM)));
+  }
   
   if (Level == OptimizationLevel::O0) {
     // For O0, we want both InstMarker and DynamicLineCount
@@ -1587,6 +1609,19 @@ PassBuilder::buildPerModuleDefaultPipeline(OptimizationLevel Level,
   if (EnableHeapTrackerPass) {
     FunctionPassManager FPM;
     FPM.addPass(HeapTrackerPass());
+    MPM.addPass(createModuleToFunctionPassAdaptor(std::move(FPM)));
+  }
+
+  if (EnableInlineCountUnsafe) {
+    // Add the InlineCountUnsafe pass to the beginning of the opt pipiline.
+    FunctionPassManager FPM;
+    FPM.addPass(InlineCountUnsafe());
+    MPM.addPass(createModuleToFunctionPassAdaptor(std::move(FPM)));
+  }
+    // Add the FunctionCount pass to the beginning of the opt pipiline.
+  if (EnableFunctionCount) {
+    FunctionPassManager FPM;
+    FPM.addPass(FunctionCount());
     MPM.addPass(createModuleToFunctionPassAdaptor(std::move(FPM)));
   }
   // UNSAFE-RUST END

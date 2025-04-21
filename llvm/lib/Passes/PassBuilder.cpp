@@ -295,6 +295,9 @@
 #include "llvm/Transforms/InstMarker/InstMarker.h"
 #include "llvm/Transforms/DynamicLineCount/DynamicLineCount.h"
 #include "llvm/Transforms/HeapTracker/HeapTracker.h"
+#include "llvm/Transforms/DynamicUnsafeCount/InlineMarker.h"
+#include "llvm/Transforms/DynamicUnsafeCount/InlineCountUnsafe.h"
+#include "llvm/Transforms/DynamicUnsafeCount/FunctionCount.h"
 // UNSAFE-RUST END
 
 using namespace llvm;

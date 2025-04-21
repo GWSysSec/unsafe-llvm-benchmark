@@ -35,6 +35,7 @@ add_llvm_component_library(LLVMPasses
   UnsafeRustDummy
   InstMarker
   DynamicLineCount
+  DynamicUnsafeCount
   HeapTracker
   # UNSAFE-RUST END
   )
