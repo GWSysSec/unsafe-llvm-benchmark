@@ -51,6 +51,9 @@ struct UnsafeAnalysisResult {
   
   // Check if a file is a project file (vs standard lib)
   static bool isProjectFile(StringRef File);
+  
+  // Check if we should only instrument the primary package
+  static bool isPrimaryPackage();
 };
 
 // The foundational analysis pass

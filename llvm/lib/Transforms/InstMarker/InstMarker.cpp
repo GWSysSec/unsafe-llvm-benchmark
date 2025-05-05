@@ -5,6 +5,15 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
+//
+// InstMarker is the foundation pass for unsafe Rust code analysis. It:
+// 1. Identifies instructions with "unsafe_inst" metadata
+// 2. Inserts marker_begin/marker_end assembly markers around unsafe blocks
+// 3. Calls total_unsafe_block_count() to track block execution
+// 4. Provides analysis results for use by other passes (like DynamicLineCount)
+// 5. Supports primary package filtering with CARGO_PRIMARY_PACKAGE=1
+//
+//===----------------------------------------------------------------------===//
 
 #include "llvm/Transforms/InstMarker/InstMarker.h"
 #include "llvm/IR/Function.h"
@@ -21,6 +30,8 @@
 #include <string>
 #include <algorithm>
 #include <vector>
+#include <cstring>
+#include <cstdlib>
 
 using namespace llvm;
 
@@ -44,12 +55,21 @@ bool UnsafeAnalysisResult::isProjectFile(StringRef File) {
   return true;
 }
 
+bool UnsafeAnalysisResult::isPrimaryPackage() {
+  // Only instrument the primary package if CARGO_PRIMARY_PACKAGE=1
+  const char *p = std::getenv("CARGO_PRIMARY_PACKAGE");
+  return p && std::strcmp(p, "1") == 0;
+}
+
 // Implement UnsafeAnalysis to collect and analyze unsafe instructions
 UnsafeAnalysis::Result UnsafeAnalysis::run(Function &F, FunctionAnalysisManager &AM) {
   UnsafeAnalysisResult Result;
   
   if (F.isDeclaration())
     return Result;
+    
+  // Check if we should only instrument the primary package
+  bool OnlyPrimaryPackage = UnsafeAnalysisResult::isPrimaryPackage();
   
   // Collect all unsafe instructions and their locations
   for (Instruction &I : instructions(F)) {
@@ -66,6 +86,11 @@ UnsafeAnalysis::Result UnsafeAnalysis::run(Function &F, FunctionAnalysisManager 
     StringRef File = Loc->getFilename();
     if (File.empty() || !UnsafeAnalysisResult::isProjectFile(File))
       continue;
+      
+    // Skip if we're only processing the primary package and this isn't in it
+    if (OnlyPrimaryPackage && !File.contains("src/")) {
+      continue;
+    }
       
     unsigned Line = Loc->getLine();
     

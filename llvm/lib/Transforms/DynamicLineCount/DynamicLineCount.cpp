@@ -5,6 +5,18 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
+//
+// DynamicLineCount builds upon InstMarker to provide line-level coverage analysis:
+// 1. Uses UnsafeAnalysis from InstMarker to identify unsafe instructions
+// 2. Registers all unsafe lines with update_unsafe_line_counter() at program start
+// 3. Adds mark_unsafe_line_executed() calls at each unsafe instruction
+// 4. Generates coverage reports showing which unsafe lines were executed
+// 5. Supports primary package filtering with CARGO_PRIMARY_PACKAGE=1
+//
+// The runtime library keeps track of all unsafe lines and reports coverage
+// statistics at program exit, showing which unsafe code paths were exercised.
+//
+//===----------------------------------------------------------------------===//
 
 #include "llvm/Transforms/DynamicLineCount/DynamicLineCount.h"
 #include "llvm/IR/Function.h"
@@ -21,6 +33,8 @@
 #include <algorithm>
 #include <map>
 #include <vector>
+#include <cstring>
+#include <cstdlib>
 
 using namespace llvm;
 
@@ -40,6 +54,11 @@ PreservedAnalyses DynamicLineCountPass::run(Function &F, FunctionAnalysisManager
          FnName.find("_ZN3std") == 0)) {
     return PreservedAnalyses::all();
   }
+  
+  // Check if we should only instrument the primary package
+  // We use the same primary package detection as InstMarker
+  const char *p = std::getenv("CARGO_PRIMARY_PACKAGE");
+  bool OnlyPrimaryPackage = p && std::strcmp(p, "1") == 0;
 
   // Get the unsafe analysis result from InstMarkerPass
   auto &UnsafeResult = AM.getResult<UnsafeAnalysis>(F);
@@ -62,7 +81,7 @@ PreservedAnalyses DynamicLineCountPass::run(Function &F, FunctionAnalysisManager
   FunctionCallee UpdateUnsafeLine = M->getOrInsertFunction(UPDATE_UNSAFE_LINE_FN, RuntimeFnTy);
   FunctionCallee MarkUnsafeLine = M->getOrInsertFunction(MARK_UNSAFE_LINE_FN, RuntimeFnTy);
   
-  // Add block count function too
+  // Use the same block count function that InstMarker uses
   FunctionType *BlockFnTy = FunctionType::get(VoidTy, {Int64Ty}, false);
   FunctionCallee BlockCountFn = M->getOrInsertFunction("total_unsafe_block_count", BlockFnTy);
   
@@ -71,14 +90,21 @@ PreservedAnalyses DynamicLineCountPass::run(Function &F, FunctionAnalysisManager
   // Set function attributes for runtime calls
   for (auto *RuntimeFn : {
       dyn_cast<Function>(UpdateUnsafeLine.getCallee()),
-      dyn_cast<Function>(MarkUnsafeLine.getCallee()),
-      dyn_cast<Function>(BlockCountFn.getCallee())}) {
+      dyn_cast<Function>(MarkUnsafeLine.getCallee())}) {
     if (RuntimeFn) {
       RuntimeFn->removeFnAttr(Attribute::ReadNone);
       RuntimeFn->removeFnAttr(Attribute::ReadOnly);
       RuntimeFn->addFnAttr(Attribute::NoInline);
       RuntimeFn->setLinkage(GlobalValue::ExternalLinkage);
     }
+  }
+  
+  // Configure block count function too for consistency
+  if (auto *BlockFn = dyn_cast<Function>(BlockCountFn.getCallee())) {
+    BlockFn->removeFnAttr(Attribute::ReadNone);
+    BlockFn->removeFnAttr(Attribute::ReadOnly);
+    BlockFn->addFnAttr(Attribute::NoInline);
+    BlockFn->setLinkage(GlobalValue::ExternalLinkage);
   }
 
   int instrumentedCount = 0;
@@ -93,6 +119,11 @@ PreservedAnalyses DynamicLineCountPass::run(Function &F, FunctionAnalysisManager
     auto Key = std::make_pair(Info.File.str(), Info.Line);
     if (!UnsafeResult.InstrumentedLines.insert(Key).second)
       continue;
+      
+    // Skip if we're only processing the primary package and this isn't in it
+    if (OnlyPrimaryPackage && !Info.File.contains("src/")) {
+      continue;
+    }
       
     UnsafeLineRegistry.push_back({Info.Line, Info.File.str()});
   }
@@ -118,9 +149,8 @@ PreservedAnalyses DynamicLineCountPass::run(Function &F, FunctionAnalysisManager
     BasicBlock *EntryBB = BasicBlock::Create(Ctx, "entry", RegistrationFn);
     IRBuilder<> RegBuilder(EntryBB);
     
-    // Add call to register the block count - use UnsafeInsts size as proxy for block count
-    Value *BlockSizeArg = ConstantInt::get(Int64Ty, UnsafeResult.UnsafeInsts.size());
-    RegBuilder.CreateCall(BlockCountFn, BlockSizeArg);
+    // We don't need to add block count calls here since InstMarker already handles this
+    // InstMarker will call total_unsafe_block_count() with appropriate block sizes
     
     // Create a global string for each file
     std::map<std::string, Value*> FileGlobals;
@@ -159,6 +189,11 @@ PreservedAnalyses DynamicLineCountPass::run(Function &F, FunctionAnalysisManager
   
   // STEP 2: Process each unsafe instruction to insert runtime tracking
   for (const auto &Info : UnsafeResult.UnsafeInsts) {
+    // Skip if we're only processing the primary package and this isn't in it
+    if (OnlyPrimaryPackage && !Info.File.contains("src/")) {
+      continue;
+    }
+    
     Instruction *UnsafeInst = Info.Inst;
     BasicBlock *BB = UnsafeInst->getParent();
     

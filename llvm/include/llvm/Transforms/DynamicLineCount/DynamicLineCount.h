@@ -40,10 +40,13 @@ inline constexpr const char *MARK_UNSAFE_LINE_FN = "mark_unsafe_line_executed";
 /// DynamicLineCountPass - This pass instruments code with calls to the runtime 
 /// library to track execution of unsafe Rust code at the line level.
 ///
-/// It depends on InstMarker pass for identification of unsafe instructions.
-/// The pass adds two types of instrumentation:
-/// 1. Module constructor calls to register all unsafe lines
-/// 2. Runtime execution tracking at each unsafe instruction site
+/// It depends on InstMarker pass for identification of unsafe instructions and block marking.
+/// The relationship between the passes is:
+/// 1. InstMarker: Identifies unsafe instructions and inserts marker_begin/marker_end
+///    with calls to total_unsafe_block_count() for each block
+/// 2. DynamicLineCount: Focuses on line-level coverage analysis by:
+///    a. Registering all unsafe lines at program startup
+///    b. Tracking execution of individual unsafe instructions during runtime
 struct DynamicLineCountPass : PassInfoMixin<DynamicLineCountPass> {
   /// Main entry point - instruments unsafe code for runtime tracking
   PreservedAnalyses run(Function &F, FunctionAnalysisManager &AM);
