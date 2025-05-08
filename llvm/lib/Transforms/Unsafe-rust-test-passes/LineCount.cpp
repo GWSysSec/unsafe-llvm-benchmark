@@ -19,7 +19,7 @@ PreservedAnalyses LineCount::run(Module &M,
     unsigned int unsafe_ptrtoint_instructions = 0;
     unsigned int unsafe_inttoptr_instructions = 0;
     unsigned int unsafe_bitcast_instructions = 0;
-
+    unsigned int functions_with_unsafe_instructions = 0;
 
     std::error_code e;
     std::string json_filename = M.getName().str();
@@ -84,9 +84,10 @@ PreservedAnalyses LineCount::run(Module &M,
 
         }
 
-        //llvm::errs() << "# Of instructions in function " << F.getName() << ": " << function_line_count << "\n"
-        //<< "# Of unsafe instructions in function " << F.getName() << ": " << unsafe_function_line_count << "\n";
-
+        if (unsafe_function_line_count > 0) { //If the function has unsafe IR instructions, count it
+            functions_with_unsafe_instructions++;
+        }
+        
     }
 
     //llvm::errs() << "# Of instructions in " << M.getName() << ": " << total_line_count << "\n"
@@ -116,6 +117,7 @@ PreservedAnalyses LineCount::run(Module &M,
         J.attribute("total_unsafe_ptrtoint_instruction_count", unsafe_ptrtoint_instructions); //Total unsafe ptrtoint instruction count
         J.attribute("total_unsafe_inttoptr_instruction_count", unsafe_inttoptr_instructions); //Total unsafe inttoptr instruction count
         J.attribute("total_unsafe_bitcast_instruction_count", unsafe_bitcast_instructions); //Total unsafe bitcast instruction count
+        J.attribute("functions_with_unsafe_instructions", functions_with_unsafe_instructions) //Total IR functions with unsafe code in them
         J.attribute("percent_unsafe", percent_unsafe); //Percentage unsafe code
     });
 
