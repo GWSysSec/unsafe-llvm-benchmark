@@ -1535,7 +1535,7 @@ PassBuilder::buildPerModuleDefaultPipeline(OptimizationLevel Level,
   // UNSAFE-RUST BEGIN
   // Add the UnsafeRustDummy pass to the beginning of the opt pipiline.
   FunctionPassManager FPM;
-  FPM.addPass(UnsafeRustDummyPass());
+  //FPM.addPass(UnsafeRustDummyPass());
   FPM.addPass(DynamicLineCountPass());
   MPM.addPass(createModuleToFunctionPassAdaptor(std::move(FPM)));
   // UNSAFE-RUST END

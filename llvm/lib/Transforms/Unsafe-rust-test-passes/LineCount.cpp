@@ -108,15 +108,15 @@ PreservedAnalyses LineCount::run(Module &M,
         J.attribute("module_name", M.getName()); //Module name
         J.attribute("total_instruction_count", total_line_count); //Total instruction count
         J.attribute("total_unsafe_instruction_count", total_unsafe_line_count); //Total unsafe instruction count
-        J.attribute("total_unsafe_add_instruction_count", unsafe_add_instructions); //Total unsafe add instruction count
-        J.attribute("total_unsafe_load_instruction_count", unsafe_load_instructions); //Total unsafe load instruction count
-        J.attribute("total_unsafe_store_instruction_count", unsafe_store_instructions); //Total unsafe store instruction count
-        J.attribute("total_unsafe_get_element_ptr_instruction_count", unsafe_get_element_ptr_instructions); //Total unsafe pointer arithmetic instruction count
-        J.attribute("total_unsafe_sub_instruction_count", unsafe_sub_instructions); //Total unsafe sub instruction count
-        J.attribute("total_unsafe_alloca_instruction_count", unsafe_alloca_instructions); //Total unsafe alloca instruction count
-        J.attribute("total_unsafe_ptrtoint_instruction_count", unsafe_ptrtoint_instructions); //Total unsafe ptrtoint instruction count
-        J.attribute("total_unsafe_inttoptr_instruction_count", unsafe_inttoptr_instructions); //Total unsafe inttoptr instruction count
-        J.attribute("total_unsafe_bitcast_instruction_count", unsafe_bitcast_instructions); //Total unsafe bitcast instruction count
+        J.attribute("total_unsafe_add", unsafe_add_instructions); //Total unsafe add instruction count
+        J.attribute("total_unsafe_load", unsafe_load_instructions); //Total unsafe load instruction count
+        J.attribute("total_unsafe_store", unsafe_store_instructions); //Total unsafe store instruction count
+        J.attribute("total_unsafe_get_element_ptr", unsafe_get_element_ptr_instructions); //Total unsafe pointer arithmetic instruction count
+        J.attribute("total_unsafe_sub", unsafe_sub_instructions); //Total unsafe sub instruction count
+        J.attribute("total_unsafe_alloca", unsafe_alloca_instructions); //Total unsafe alloca instruction count
+        J.attribute("total_unsafe_ptrtoint", unsafe_ptrtoint_instructions); //Total unsafe ptrtoint instruction count
+        J.attribute("total_unsafe_inttoptr", unsafe_inttoptr_instructions); //Total unsafe inttoptr instruction count
+        J.attribute("total_unsafe_bitcast", unsafe_bitcast_instructions); //Total unsafe bitcast instruction count
         J.attribute("functions_with_unsafe_instructions", functions_with_unsafe_instructions); //Total IR functions with unsafe code in them
         J.attribute("percent_unsafe", percent_unsafe); //Percentage unsafe code
     });
