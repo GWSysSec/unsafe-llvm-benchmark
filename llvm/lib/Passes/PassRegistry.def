@@ -277,6 +277,7 @@ FUNCTION_ANALYSIS("targetir",
                   TM ? TM->getTargetIRAnalysis() : TargetIRAnalysis())
 FUNCTION_ANALYSIS("targetlibinfo", TargetLibraryAnalysis())
 FUNCTION_ANALYSIS("uniformity", UniformityInfoAnalysis())
+FUNCTION_ANALYSIS("unsafe-analysis", UnsafeAnalysis())
 FUNCTION_ANALYSIS("verify", VerifierAnalysis())
 
 #ifndef FUNCTION_ALIAS_ANALYSIS
@@ -338,11 +339,13 @@ FUNCTION_PASS("guard-widening", GuardWideningPass())
 FUNCTION_PASS("gvn-hoist", GVNHoistPass())
 FUNCTION_PASS("gvn-sink", GVNSinkPass())
 FUNCTION_PASS("helloworld", HelloWorldPass())
+FUNCTION_PASS("heap-tracker", HeapTrackerPass())
 FUNCTION_PASS("indirectbr-expand", IndirectBrExpandPass(TM))
 FUNCTION_PASS("infer-address-spaces", InferAddressSpacesPass())
 FUNCTION_PASS("infer-alignment", InferAlignmentPass())
 FUNCTION_PASS("inject-tli-mappings", InjectTLIMappings())
 FUNCTION_PASS("instcount", InstCountPass())
+FUNCTION_PASS("instmarker", InstMarkerPass())
 FUNCTION_PASS("instnamer", InstructionNamerPass())
 FUNCTION_PASS("instsimplify", InstSimplifyPass())
 FUNCTION_PASS("interleaved-access", InterleavedAccessPass(TM))
@@ -459,6 +462,8 @@ FUNCTION_PASS("view-post-dom", PostDomViewer())
 FUNCTION_PASS("view-post-dom-only", PostDomOnlyViewer())
 FUNCTION_PASS("wasm-eh-prepare", WasmEHPreparePass())
 FUNCTION_PASS("unsafe-rust-measure", UnsafeRustDummyPass())
+FUNCTION_PASS("unsafe-analysis-pass", UnsafeAnalysisPass())
+FUNCTION_PASS("unsafe-rust-dummy", UnsafeRustDummyPass())
 #undef FUNCTION_PASS
 
 #ifndef FUNCTION_PASS_WITH_PARAMS

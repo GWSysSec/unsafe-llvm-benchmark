@@ -35,6 +35,8 @@ add_llvm_component_library(LLVMPasses
   UnsafeRustDummy
   Unsafe-rust-test-passes
   SourceCodeMapping
+  InstMarker
   DynamicLineCount
+  HeapTracker
   # UNSAFE-RUST END
   )
