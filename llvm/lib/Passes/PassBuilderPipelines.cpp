@@ -140,6 +140,7 @@
 #include "llvm/Transforms/UnsafeRustDummy/UnsafeRustDummy.h"
 #include "llvm/Transforms/DynamicLineCount/DynamicLineCount.h"
 #include "llvm/Transforms/HeapTracker/HeapTracker.h"
+#include "llvm/Transforms/InstMarker/InstMarker.h"
 // UNSAFE-RUST END
 using namespace llvm;
 
@@ -286,6 +287,23 @@ static cl::opt<bool> UseLoopVersioningLICM(
 static cl::opt<bool> EnableUnsafeRustDummyPass(
   "enable-unsafe-rust-dummy", cl::init(false), cl::Hidden,
   cl::desc("Enable the UnsafeRustDummy pass"));
+
+static cl::opt<bool> EnableLineCountPass(
+  "enable-line-count", cl::init(false), cl::Hidden,
+  cl::desc("Enable the LineCount pass"));
+
+static cl::opt<bool> EnableHeapTrackerPass(
+    "enable-unsafe-rust-heap-tracker", cl::init(false), cl::Hidden,
+    cl::desc("Enable the HeapTracker pass"));
+
+static cl::opt<bool> EnableInstMarkerPass(
+    "enable-inst-marker-pass", cl::init(false), cl::Hidden,
+    cl::desc("Enable the InstMarker pass"));
+
+static cl::opt<bool> EnableDynamicLineCount(
+  "enable-dynamic-line-count", cl::init(false), cl::Hidden,
+  cl::desc("Enable the DynamicLineCount pass"));
+
 // UNSAFE-RUST END
 
 namespace llvm {
@@ -1512,25 +1530,37 @@ PassBuilder::buildPerModuleDefaultPipeline(OptimizationLevel Level,
 
   ModulePassManager MPM;
 
-  //FunctionPassManager FPM;
-  //FPM.addPass(LineCount()); //Counts total lines and total unsafe lines at Function Level
-  //FPM.addPass(UnsafeRustDummyPass()); //Prints function names
-
-  //MPM.addPass(createModuleToFunctionPassAdaptor(std::move(FPM)));
-
-  //Adding LineCount to MPM in Release Mode
-  // if (Level == OptimizationLevel::O3) {
-  //   llvm::errs() << "Ran in O3 optimisation\n";
-  //   MPM.addPass(LineCount());
-  // }
-
-  //MPM.addPass(LineCount());
-
-
   FunctionPassManager FPM;
-  //FPM.addPass(UnsafeRustDummyPass());
-  FPM.addPass(DynamicLineCountPass());
-  MPM.addPass(createModuleToFunctionPassAdaptor(std::move(FPM)));
+  // UNSAFE-RUST BEGIN
+  // Always run UnsafeAnalysisPass first as it's required by other passes
+  FunctionPassManager UnsafeFPM;
+  UnsafeFPM.addPass(UnsafeAnalysisPass());
+  MPM.addPass(createModuleToFunctionPassAdaptor(std::move(UnsafeFPM)));
+  
+  if (Level == OptimizationLevel::O0) {
+    // For O0, we want both InstMarker and DynamicLineCount
+    FunctionPassManager InstFPM;
+    InstFPM.addPass(InstMarkerPass());
+    MPM.addPass(createModuleToFunctionPassAdaptor(std::move(InstFPM)));
+    
+    FunctionPassManager DLineFPM;
+    DLineFPM.addPass(DynamicLineCountPass());
+    MPM.addPass(createModuleToFunctionPassAdaptor(std::move(DLineFPM)));
+  } else if (Level == OptimizationLevel::O3) {
+    // For O3, run InstMarker when enabled
+    if (EnableInstMarkerPass) {
+      FunctionPassManager InstFPM;
+      InstFPM.addPass(InstMarkerPass());
+      MPM.addPass(createModuleToFunctionPassAdaptor(std::move(InstFPM)));
+    }
+    
+    // And run HeapTracker when enabled
+    if (EnableHeapTrackerPass) {
+      FunctionPassManager HeapTrackerFPM;
+      HeapTrackerFPM.addPass(HeapTrackerPass());
+      MPM.addPass(createModuleToFunctionPassAdaptor(std::move(HeapTrackerFPM)));
+    }
+  }
   // UNSAFE-RUST END
 
 
@@ -2038,19 +2068,30 @@ ModulePassManager PassBuilder::buildO0DefaultPipeline(OptimizationLevel Level,
 
   ModulePassManager MPM;
 
-  // UNSAFE-RUST BEGIN 
-  if (EnableUnsafeRustDummyPass) {
-  // Add the UnsafeRustDummy pass to the beginning of the opt pipiline.
-    FunctionPassManager FPM;
-    FPM.addPass(UnsafeRustDummyPass());
-    MPM.addPass(createModuleToFunctionPassAdaptor(std::move(FPM)));
-  // UNSAFE-RUST END
+  // UNSAFE-RUST BEGIN
+  // First, run UnsafeAnalysisPass for foundational analysis
+  FunctionPassManager UnsafeFPM;
+  UnsafeFPM.addPass(UnsafeAnalysisPass());
+  MPM.addPass(createModuleToFunctionPassAdaptor(std::move(UnsafeFPM)));
+  
+  // For O0, always run InstMarker and DynamicLineCount, controlled by flags 
+  if (EnableInstMarkerPass) {
+    FunctionPassManager InstFPM;
+    InstFPM.addPass(InstMarkerPass());
+    MPM.addPass(createModuleToFunctionPassAdaptor(std::move(InstFPM)));
   }
-
-  // UNSAFE-RUST BEGIN 
-    FunctionPassManager FPM;
-    FPM.addPass(DynamicLineCountPass());
-    MPM.addPass(createModuleToFunctionPassAdaptor(std::move(FPM)));
+  
+  if (EnableDynamicLineCount) {
+    FunctionPassManager DLineFPM;
+    DLineFPM.addPass(DynamicLineCountPass());
+    MPM.addPass(createModuleToFunctionPassAdaptor(std::move(DLineFPM)));
+  }
+  
+  if (EnableUnsafeRustDummyPass) {
+    FunctionPassManager DummyFPM;
+    DummyFPM.addPass(UnsafeRustDummyPass());
+    MPM.addPass(createModuleToFunctionPassAdaptor(std::move(DummyFPM)));
+  }
   // UNSAFE-RUST END
 
 

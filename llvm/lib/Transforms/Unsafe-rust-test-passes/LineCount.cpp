@@ -1,4 +1,9 @@
 #include "llvm/Transforms/Unsafe-rust-test-passes/LineCount.h"
+#include "llvm/IR/Type.h"
+#include "llvm/IR/DerivedTypes.h"
+#include "llvm/IR/Instructions.h"
+#include "llvm/IR/InlineAsm.h"
+#include "llvm/IR/Constants.h"
 
 using namespace llvm;
 
@@ -8,6 +13,9 @@ PreservedAnalyses LineCount::run(Module &M,
     unsigned int total_line_count = 0;
     unsigned int total_unsafe_line_count = 0;
     llvm::StringRef unsafe_string = llvm::StringRef("unsafe_inst"); //Official string ref for unsafe instructions
+    static const char *UNSAFE_MARKER_BEGIN = "nop # marker_begin";
+    static const char *UNSAFE_MARKER_END = "nop # marker_end";
+    bool unsafe_block_started = false; //When true, all instructions are unsafe as they're inside the NOP boundaries
 
     //Types of instructions
     unsigned int unsafe_load_instructions = 0;
@@ -48,9 +56,27 @@ PreservedAnalyses LineCount::run(Module &M,
 
             for (Instruction &I : BB) {
                 
-                MDNode* is_unsafe = I.getMetadata(unsafe_string);
+                //MDNode* is_unsafe = I.getMetadata(unsafe_string);
+                //if (llvm::CallInst *CI = llvm::dyn_cast<llvm::CallInst>(&I)) { //Checking for INST marker flag - derived from HeapTracker.cpp
+                    //llvm::errs() << "CallInst passed\n";
+                    //llvm::errs() << "CallInst name: " << CI->getName() << "\n";
+                    //llvm::errs() << "CallInst operand: " << CI->getCalledOperand() << "\n";
+                    //llvm::errs() << "CallInst op code name: " << CI->getOpcodeName() << "\n";
+                    if (llvm::InlineAsm *IA = llvm::dyn_cast<llvm::InlineAsm>(&I)) {
+                        llvm::errs() << "IA passed\n";
+                        llvm::StringRef AsmStr = IA->getAsmString();
+                        llvm::errs() << "ASM String: " << AsmStr << "\n";
+                        if (AsmStr == UNSAFE_MARKER_BEGIN) {
+                            llvm::errs() << "unsafe block started\n";
+                            unsafe_block_started = true;
+                        } else if (AsmStr == UNSAFE_MARKER_END) {
+                            llvm::errs() << "unsafe block ended\n";
+                            unsafe_block_started = false;
+                        }
+                    }
+                //}
 
-                if (is_unsafe != NULL) {
+                if (unsafe_block_started != false) {
                     ++total_unsafe_line_count;
                     ++unsafe_function_line_count;
 
