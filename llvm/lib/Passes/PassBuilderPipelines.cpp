@@ -139,6 +139,7 @@
 #include "llvm/Transforms/UnsafeRustDummy/UnsafeRustDummy.h"
 #include "llvm/Transforms/InstMarker/InstMarker.h"
 #include "llvm/Transforms/DynamicLineCount/DynamicLineCount.h"
+#include "llvm/Transforms/CpuCycleCount/CpuCycleCount.h"
 #include "llvm/Transforms/HeapTracker/HeapTracker.h"
 // UNSAFE-RUST END
 
@@ -299,6 +300,10 @@ static cl::opt<bool> EnableInstMarkerPass(
 static cl::opt<bool> EnableHeapTrackerPass(
     "enable-unsafe-rust-heap-tracker", cl::init(false), cl::Hidden,
     cl::desc("Enable the HeapTracker pass"));
+
+static cl::opt<bool> EnableCpuCycleCount(
+    "enable-cpu-cycle-count", cl::init(false), cl::Hidden,
+    cl::desc("Enable the CpuCycleCount pass"));
   // UNSAFE-RUST END
 
 namespace llvm {
@@ -1538,12 +1543,22 @@ PassBuilder::buildPerModuleDefaultPipeline(OptimizationLevel Level,
     FunctionPassManager DLineFPM;
     DLineFPM.addPass(DynamicLineCountPass());
     MPM.addPass(createModuleToFunctionPassAdaptor(std::move(DLineFPM)));
+    
+    // CPU cycle counting for O0 (commented out, uncomment if needed)
+    // if (EnableCpuCycleCount) {
+    //   MPM.addPass(CpuCycleCountPass());
+    // }
   } else if (Level == OptimizationLevel::O3) {
     // For O3, run InstMarker when enabled
     if (EnableInstMarkerPass) {
       FunctionPassManager InstFPM;
       InstFPM.addPass(InstMarkerPass());
       MPM.addPass(createModuleToFunctionPassAdaptor(std::move(InstFPM)));
+    }
+    
+    // Run CpuCycleCount when enabled (module-level pass)
+    if (EnableCpuCycleCount) {
+      MPM.addPass(CpuCycleCountPass());
     }
     
     // And run HeapTracker when enabled
@@ -2078,6 +2093,11 @@ ModulePassManager PassBuilder::buildO0DefaultPipeline(OptimizationLevel Level,
     DLineFPM.addPass(DynamicLineCountPass());
     MPM.addPass(createModuleToFunctionPassAdaptor(std::move(DLineFPM)));
   }
+  
+  // CPU cycle counting for O0 (commented out, uncomment if needed)
+  // if (EnableCpuCycleCount) {
+  //   MPM.addPass(CpuCycleCountPass());
+  // }
   
   if (EnableUnsafeRustDummyPass) {
     FunctionPassManager DummyFPM;

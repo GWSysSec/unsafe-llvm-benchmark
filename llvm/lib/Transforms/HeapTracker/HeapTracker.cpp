@@ -15,23 +15,38 @@
 
 static const char *UNSAFE_MARKER_BEGIN      = "nop # marker_begin";
 static const char *UNSAFE_MARKER_END        = "nop # marker_end";
+static const char *DYN_MEM_ACCESS_FN        = "dyn_mem_access";
 static const char *DYN_UNSAFE_MEM_ACCESS_FN = "dyn_unsafe_mem_access";
 
 using namespace llvm;
 
-PreservedAnalyses HeapTrackerPass::run(Function &F,
-                                                    FunctionAnalysisManager &AM) {
-  // Define a fn prototype for dyn_unsafe_mem_access() defined in our Rust lib.
-  LLVMContext &C = F.getContext();                                                 
-  Module *M = F.getParent();
-  Type *voidTy = Type::getVoidTy(C);
-  Type *rawPtrTy = PointerType::getUnqual(Type::getInt8Ty(C));
-  Type *booleanTy = Type::getInt1Ty(C);
-  FunctionType *dynUnsafeMemAccessFnTy = FunctionType::get(
-    voidTy, {rawPtrTy, booleanTy}, false);
-  FunctionCallee dynUnsafeMemAccessFn = M->getOrInsertFunction(
-    DYN_UNSAFE_MEM_ACCESS_FN, dynUnsafeMemAccessFnTy);
+/// @brief Add a call to dyn_mem_access() before each memory instruction.
+/// @param F The target function.
+/// @param dynMemAccessFn The to-be-inserted callee.
+static void instrumentMemInst(Function &F, FunctionCallee dynMemAccessFn) {
+  for (BasicBlock &BB : F) {
+    SmallVector<Instruction*, 8> memInsts;
+    for (Instruction &I : BB) {
+      Instruction *Inst = &I;
+      if (isa<LoadInst>(Inst) || isa<StoreInst>(Inst)) {
+        memInsts.push_back(Inst);
+      }
+    }
 
+    // Insert a call to dyn_mem_access() before each memory instruction.
+    for (Instruction *memInst : memInsts) {
+      Value *destAddr = isa<LoadInst>(memInst) ?
+         cast<LoadInst>(memInst)->getPointerOperand() :
+         cast<StoreInst>(memInst)->getPointerOperand();
+      CallInst::Create(dynMemAccessFn, destAddr, "", memInst);
+    }
+  }
+}
+
+/// @brief Add a call to dyn_unsafe_mem_access() before each unsafe memory instruction.
+/// @param F The target function.
+/// @param dynUnsafeMemAccessFn The to-be-inserted callee.
+static void instrumentUnsafeMemInst(Function &F, FunctionCallee dynUnsafeMemAccessFn) {
   for (BasicBlock &BB : F) {
     // Indicating whether the the pass has entered into an unsafe block.
     bool unsafeBlockStarted = false;
@@ -62,9 +77,34 @@ PreservedAnalyses HeapTrackerPass::run(Function &F,
       bool isLoad = isa<LoadInst>(memInst);
       Value *destAddr = isLoad ? cast<LoadInst>(memInst)->getPointerOperand() :
                                  cast<StoreInst>(memInst)->getPointerOperand();
-      Value *isLoadVal = ConstantInt::get(booleanTy, isLoad);
+      Value *isLoadVal = ConstantInt::get(Type::getInt1Ty(F.getContext()), isLoad);
       CallInst::Create(dynUnsafeMemAccessFn, {destAddr, isLoadVal}, "", memInst);
     }
   }
+}
+
+PreservedAnalyses HeapTrackerPass::run(Function &F,
+                                       FunctionAnalysisManager &AM) {
+  // Define fn prototypes of dyn_mem_access() and dyn_unsafe_mem_access()
+  // defined in the Rust runlib lib.
+  LLVMContext &C = F.getContext();                                                 
+  Module *M = F.getParent();
+  Type *voidTy = Type::getVoidTy(C);
+  Type *rawPtrTy = PointerType::getUnqual(Type::getInt8Ty(C));
+  Type *booleanTy = Type::getInt1Ty(C);
+  FunctionType *dynMemAccessFnTy = FunctionType::get(voidTy, rawPtrTy, false);
+  FunctionCallee dynMemAccessFn = M->getOrInsertFunction(
+    DYN_MEM_ACCESS_FN, dynMemAccessFnTy);
+  FunctionType *dynUnsafeMemAccessFnTy = FunctionType::get(
+    voidTy, {rawPtrTy, booleanTy}, false);
+  FunctionCallee dynUnsafeMemAccessFn = M->getOrInsertFunction(
+    DYN_UNSAFE_MEM_ACCESS_FN, dynUnsafeMemAccessFnTy);
+
+  // First, insert calls to dyn_mem_access
+  instrumentMemInst(F, dynMemAccessFn);
+
+  // Then, insert calls to dyn_unsafe_mem_access
+  instrumentUnsafeMemInst(F, dynUnsafeMemAccessFn);
+  
   return PreservedAnalyses::all();
 }
