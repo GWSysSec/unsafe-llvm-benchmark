@@ -1515,9 +1515,9 @@ PassBuilder::buildModuleOptimizationPipeline(OptimizationLevel Level,
   if (!LTOPreLink)
     MPM.addPass(RelLookupTableConverterPass());
 
-  if (EnableLineCountPass) {
-    MPM.addPass(LineCount()); //LineCount after main optimisations
-  }
+  //if (EnableLineCountPass) {
+  //  MPM.addPass(LineCount()); //LineCount after main optimisations
+  //}
 
   return MPM;
 }
@@ -1539,6 +1539,7 @@ PassBuilder::buildPerModuleDefaultPipeline(OptimizationLevel Level,
   
   if (Level == OptimizationLevel::O0) {
     // For O0, we want both InstMarker and DynamicLineCount
+    //llvm::errs() << "InstMarker enabled O0\n";
     FunctionPassManager InstFPM;
     InstFPM.addPass(InstMarkerPass());
     MPM.addPass(createModuleToFunctionPassAdaptor(std::move(InstFPM)));
@@ -1546,9 +1547,11 @@ PassBuilder::buildPerModuleDefaultPipeline(OptimizationLevel Level,
     FunctionPassManager DLineFPM;
     DLineFPM.addPass(DynamicLineCountPass());
     MPM.addPass(createModuleToFunctionPassAdaptor(std::move(DLineFPM)));
-  } else if (Level == OptimizationLevel::O3) {
+  }
+  if (Level == OptimizationLevel::O3) {
     // For O3, run InstMarker when enabled
     if (EnableInstMarkerPass) {
+      llvm::errs() << "InstMarker enabled O3\n";
       FunctionPassManager InstFPM;
       InstFPM.addPass(InstMarkerPass());
       MPM.addPass(createModuleToFunctionPassAdaptor(std::move(InstFPM)));
@@ -1602,6 +1605,12 @@ PassBuilder::buildPerModuleDefaultPipeline(OptimizationLevel Level,
 
   if (LTOPreLink)
     addRequiredLTOPreLinkPasses(MPM);
+
+  //if (EnableLineCountPass) {
+  //  llvm::errs() << "InstMarker enabled O3\n";
+  //  MPM.addPass(LineCount()); //LineCount after main optimisations
+  //}
+  
   return MPM;
 }
 
@@ -2091,6 +2100,12 @@ ModulePassManager PassBuilder::buildO0DefaultPipeline(OptimizationLevel Level,
     FunctionPassManager DummyFPM;
     DummyFPM.addPass(UnsafeRustDummyPass());
     MPM.addPass(createModuleToFunctionPassAdaptor(std::move(DummyFPM)));
+  }
+
+  if (EnableLineCountPass && LineCountRunCheck == false) {
+    llvm::errs() << "LineCount enabled O0\n";
+    llvm::errs() << "LineCountRunCheck = " << LineCountRunCheck << "\n";
+    MPM.addPass(LineCount()); //LineCount after main optimisations
   }
   // UNSAFE-RUST END
 

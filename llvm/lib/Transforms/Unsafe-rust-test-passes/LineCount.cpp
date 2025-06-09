@@ -4,6 +4,7 @@
 #include "llvm/IR/Instructions.h"
 #include "llvm/IR/InlineAsm.h"
 #include "llvm/IR/Constants.h"
+#include <string>
 
 using namespace llvm;
 
@@ -13,9 +14,9 @@ PreservedAnalyses LineCount::run(Module &M,
     unsigned int total_line_count = 0;
     unsigned int total_unsafe_line_count = 0;
     llvm::StringRef unsafe_string = llvm::StringRef("unsafe_inst"); //Official string ref for unsafe instructions
-    static const char *UNSAFE_MARKER_BEGIN = "nop # marker_begin";
-    static const char *UNSAFE_MARKER_END = "nop # marker_end";
-    bool unsafe_block_started = false; //When true, all instructions are unsafe as they're inside the NOP boundaries
+    static const char *UNSAFE_MARKER_BEGIN = "nop # marker_begin"; //new unsafe inst marker start
+    static const char *UNSAFE_MARKER_END = "nop # marker_end"; //new unsafe inst marker end
+    bool unsafe_block_started = false; //When true, all instructions are unsafe as they're inside the marker bounds
 
     //Types of instructions
     unsigned int unsafe_load_instructions = 0;
@@ -31,6 +32,9 @@ PreservedAnalyses LineCount::run(Module &M,
 
     std::error_code e;
     std::string json_filename = M.getName().str();
+    //json_filename.append("_");
+    //json_filename.append(std::to_string(rand()));
+    //json_filename.append("_");
     json_filename.append(".json");
     llvm::StringRef json_filename_stringref = llvm::StringRef(json_filename);
     llvm::raw_fd_ostream OS = raw_fd_ostream(json_filename_stringref, e);
@@ -43,7 +47,7 @@ PreservedAnalyses LineCount::run(Module &M,
 
     J.flush();
 
-    
+    //llvm::errs() << "LineCount Initialised\n";
     for (Function &F : M) {
 
         unsigned int function_line_count = 0;
@@ -57,29 +61,27 @@ PreservedAnalyses LineCount::run(Module &M,
             for (Instruction &I : BB) {
                 
                 //MDNode* is_unsafe = I.getMetadata(unsafe_string);
-                //if (llvm::CallInst *CI = llvm::dyn_cast<llvm::CallInst>(&I)) { //Checking for INST marker flag - derived from HeapTracker.cpp
+                if (llvm::CallInst *CI = llvm::dyn_cast<llvm::CallInst>(&I)) { //Checking for INST marker flag - derived from HeapTracker.cpp
                     //llvm::errs() << "CallInst passed\n";
-                    //llvm::errs() << "CallInst name: " << CI->getName() << "\n";
-                    //llvm::errs() << "CallInst operand: " << CI->getCalledOperand() << "\n";
-                    //llvm::errs() << "CallInst op code name: " << CI->getOpcodeName() << "\n";
-                    if (llvm::InlineAsm *IA = llvm::dyn_cast<llvm::InlineAsm>(&I)) {
-                        llvm::errs() << "IA passed\n";
+                    if (llvm::InlineAsm *IA = llvm::dyn_cast<llvm::InlineAsm>(CI->getCalledOperand())) {
+                        //llvm::errs() << "IA passed\n";
                         llvm::StringRef AsmStr = IA->getAsmString();
                         llvm::errs() << "ASM String: " << AsmStr << "\n";
                         if (AsmStr == UNSAFE_MARKER_BEGIN) {
-                            llvm::errs() << "unsafe block started\n";
+                            //llvm::errs() << "unsafe block started\n";
                             unsafe_block_started = true;
                         } else if (AsmStr == UNSAFE_MARKER_END) {
-                            llvm::errs() << "unsafe block ended\n";
+                            //llvm::errs() << "unsafe block ended\n";
                             unsafe_block_started = false;
                         }
                     }
-                //}
+                }
 
                 if (unsafe_block_started != false) {
                     ++total_unsafe_line_count;
                     ++unsafe_function_line_count;
-
+                    //llvm::errs() << "total_unsafe_line_count: " << total_unsafe_line_count << "\n";
+                    //llvm::errs() << "unsafe_function_line_count: " << unsafe_function_line_count << "\n";
                     switch (I.getOpcode()) {
                         case Instruction::Add:
                             ++unsafe_add_instructions;
@@ -115,14 +117,9 @@ PreservedAnalyses LineCount::run(Module &M,
         }
 
     }
-
+    //llvm::errs() << "LineCount loop finished\n";
     //llvm::errs() << "# Of instructions in " << M.getName() << ": " << total_line_count << "\n"
     //<< "# Of unsafe instructions in " << M.getName() << ": " << total_unsafe_line_count << "\n";
-
-    //llvm::errs() << "# Of unsafe add instructions in " << M.getName() << ": " << unsafe_add_instructions << "\n"
-    //<< "# Of unsafe load instructions in " << M.getName() << ": " << unsafe_load_instructions << "\n" 
-    //<< "# Of unsafe store instructions in " << M.getName() << ": " << unsafe_store_instructions << "\n"
-    //<< "# Of unsafe pointer calculation instructions in " << M.getName() << ": " << unsafe_get_element_ptr_instructions << "\n";
     
     float percent_unsafe = 0;
 
@@ -150,5 +147,11 @@ PreservedAnalyses LineCount::run(Module &M,
     J.~OStream();
     OS.close();
 
+    //llvm::errs() << "# Of unsafe add instructions in " << M.getName() << ": " << unsafe_add_instructions << "\n"
+    //<< "# Of unsafe load instructions in " << M.getName() << ": " << unsafe_load_instructions << "\n" 
+    //<< "# Of unsafe store instructions in " << M.getName() << ": " << unsafe_store_instructions << "\n"
+    //<< "# Of unsafe pointer calculation instructions in " << M.getName() << ": " << unsafe_get_element_ptr_instructions << "\n";
+
+    //llvm::errs() << "LineCount Returned\n";
   return PreservedAnalyses::all();
 }
