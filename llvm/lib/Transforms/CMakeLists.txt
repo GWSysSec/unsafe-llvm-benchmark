@@ -16,6 +16,7 @@ add_subdirectory(UnsafeRustDummy)
 add_subdirectory(SourceCodeMapping)
 # add_subdirectory(DebugInfoPreserve)
 add_subdirectory(DynamicLineCount)
+add_subdirectory(CpuCycleCount)
 add_subdirectory(InstMarker)
 add_subdirectory(HeapTracker)
 # UNSAFE-RUST END

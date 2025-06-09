@@ -33,8 +33,6 @@
 #include <algorithm>
 #include <map>
 #include <vector>
-#include <cstring>
-#include <cstdlib>
 
 using namespace llvm;
 
@@ -42,8 +40,7 @@ PreservedAnalyses DynamicLineCountPass::run(Function &F, FunctionAnalysisManager
   if (F.isDeclaration())
     return PreservedAnalyses::all();
 
-  // Don't instrument functions with certain prefixes
-  // This avoids instrumenting LLVM's own functions
+  // Skip functions with certain prefixes (LLVM's own functions)
   std::string FnName = F.getName().str();
   if (FnName.find("llvm.") == 0 || 
       FnName.find("__") == 0 || 
@@ -56,9 +53,8 @@ PreservedAnalyses DynamicLineCountPass::run(Function &F, FunctionAnalysisManager
   }
   
   // Check if we should only instrument the primary package
-  // We use the same primary package detection as InstMarker
-  const char *p = std::getenv("CARGO_PRIMARY_PACKAGE");
-  bool OnlyPrimaryPackage = p && std::strcmp(p, "1") == 0;
+  if (!UnsafeAnalysisResult::isPrimaryPackage())
+    return PreservedAnalyses::all();
 
   // Get the unsafe analysis result from InstMarkerPass
   auto &UnsafeResult = AM.getResult<UnsafeAnalysis>(F);
@@ -81,12 +77,6 @@ PreservedAnalyses DynamicLineCountPass::run(Function &F, FunctionAnalysisManager
   FunctionCallee UpdateUnsafeLine = M->getOrInsertFunction(UPDATE_UNSAFE_LINE_FN, RuntimeFnTy);
   FunctionCallee MarkUnsafeLine = M->getOrInsertFunction(MARK_UNSAFE_LINE_FN, RuntimeFnTy);
   
-  // Use the same block count function that InstMarker uses
-  FunctionType *BlockFnTy = FunctionType::get(VoidTy, {Int64Ty}, false);
-  FunctionCallee BlockCountFn = M->getOrInsertFunction("total_unsafe_block_count", BlockFnTy);
-  
-  // No control functions needed
-
   // Set function attributes for runtime calls
   for (auto *RuntimeFn : {
       dyn_cast<Function>(UpdateUnsafeLine.getCallee()),
@@ -98,62 +88,37 @@ PreservedAnalyses DynamicLineCountPass::run(Function &F, FunctionAnalysisManager
       RuntimeFn->setLinkage(GlobalValue::ExternalLinkage);
     }
   }
-  
-  // Configure block count function too for consistency
-  if (auto *BlockFn = dyn_cast<Function>(BlockCountFn.getCallee())) {
-    BlockFn->removeFnAttr(Attribute::ReadNone);
-    BlockFn->removeFnAttr(Attribute::ReadOnly);
-    BlockFn->addFnAttr(Attribute::NoInline);
-    BlockFn->setLinkage(GlobalValue::ExternalLinkage);
-  }
 
-  int instrumentedCount = 0;
-  
-  // STEP 1: First register all unsafe lines at module initialization
-  // Create a module constructor to register all unsafe lines before runtime
+  // STEP 1: Collect unique unsafe lines to register at module initialization
+  std::map<std::string, Value*> FileGlobals;
   std::vector<std::pair<int64_t, std::string>> UnsafeLineRegistry;
   
-  // Collect all unsafe lines to register
   for (const auto &Info : UnsafeResult.UnsafeInsts) {
-    // Only include each line once
+    // Only add each line once to the registry
     auto Key = std::make_pair(Info.File.str(), Info.Line);
     if (!UnsafeResult.InstrumentedLines.insert(Key).second)
       continue;
       
-    // Skip if we're only processing the primary package and this isn't in it
-    if (OnlyPrimaryPackage && !Info.File.contains("src/")) {
-      continue;
-    }
-      
     UnsafeLineRegistry.push_back({Info.Line, Info.File.str()});
   }
   
-  // Only output if there are many unsafe lines
+  // Report if there are many unsafe lines
   if (UnsafeLineRegistry.size() > 10) {
-    errs() << "[DynamicLineCount] Registering " << UnsafeLineRegistry.size() << " unsafe lines in " 
-           << F.getName() << "\n";
+    errs() << "[DynamicLineCount] Registering " << UnsafeLineRegistry.size() 
+           << " unsafe lines in " << F.getName() << "\n";
   }
   
-  // Create a module constructor to register all unsafe lines
+  // STEP 2: Create a module constructor to register all unsafe lines at program start
   if (!UnsafeLineRegistry.empty()) {
-    // Create a static registration function for this module
-    std::string RegistrationFnName = "unsafe_line_register_" + 
-                                      F.getName().str() + "_" +
-                                      std::to_string(UnsafeLineRegistry.size());
+    std::string RegistrationFnName = "unsafe_line_register_" + F.getName().str() + 
+                                     "_" + std::to_string(UnsafeLineRegistry.size());
     
     FunctionType *RegFnTy = FunctionType::get(VoidTy, false);
     Function *RegistrationFn = Function::Create(
       RegFnTy, GlobalValue::InternalLinkage, RegistrationFnName, M);
     
-    // Create a basic block and builder
     BasicBlock *EntryBB = BasicBlock::Create(Ctx, "entry", RegistrationFn);
     IRBuilder<> RegBuilder(EntryBB);
-    
-    // We don't need to add block count calls here since InstMarker already handles this
-    // InstMarker will call total_unsafe_block_count() with appropriate block sizes
-    
-    // Create a global string for each file
-    std::map<std::string, Value*> FileGlobals;
     
     // Add calls to update_unsafe_line_counter for each unsafe line
     for (const auto &[Line, File] : UnsafeLineRegistry) {
@@ -171,29 +136,22 @@ PreservedAnalyses DynamicLineCountPass::run(Function &F, FunctionAnalysisManager
       }
       FileArg = FileGlobals[File];
       
-      // Insert call to register this unsafe line
+      // Register this unsafe line with the runtime
       RegBuilder.CreateCall(UpdateUnsafeLine, {
         ConstantInt::get(Int64Ty, Line),
         FileArg
       });
     }
     
-    // Add a return instruction
     RegBuilder.CreateRetVoid();
-    
-    // Add this function to the module's global constructors
     appendToGlobalCtors(*M, RegistrationFn, 0);
-    
     Modified = true;
   }
   
-  // STEP 2: Process each unsafe instruction to insert runtime tracking
+  // STEP 3: Instrument each unsafe instruction to track execution
+  int instrumentedCount = 0;
+  
   for (const auto &Info : UnsafeResult.UnsafeInsts) {
-    // Skip if we're only processing the primary package and this isn't in it
-    if (OnlyPrimaryPackage && !Info.File.contains("src/")) {
-      continue;
-    }
-    
     Instruction *UnsafeInst = Info.Inst;
     BasicBlock *BB = UnsafeInst->getParent();
     
@@ -212,14 +170,24 @@ PreservedAnalyses DynamicLineCountPass::run(Function &F, FunctionAnalysisManager
     
     // Create or reuse a global string for the file name
     std::string GlobalName = "unsafe_str_" + UnsafeAnalysisResult::sanitizeFileName(Info.File.str());
-    GlobalVariable *GV = M->getNamedGlobal(GlobalName);
-    if (!GV) {
-      auto *FileConstant = ConstantDataArray::getString(Ctx, Info.File.str(), true);
-      GV = new GlobalVariable(
-        *M, FileConstant->getType(), /*isConstant=*/true,
-        GlobalValue::InternalLinkage, FileConstant, GlobalName
-      );
-      GV->setUnnamedAddr(GlobalValue::UnnamedAddr::Global);
+    Value *FileArg;
+    
+    if (FileGlobals.find(Info.File.str()) != FileGlobals.end()) {
+      // Reuse already created global for this file
+      FileArg = FileGlobals[Info.File.str()];
+    } else {
+      // Create a new global string for this file
+      GlobalVariable *GV = M->getNamedGlobal(GlobalName);
+      if (!GV) {
+        auto *FileConstant = ConstantDataArray::getString(Ctx, Info.File.str(), true);
+        GV = new GlobalVariable(
+          *M, FileConstant->getType(), /*isConstant=*/true,
+          GlobalValue::InternalLinkage, FileConstant, GlobalName
+        );
+        GV->setUnnamedAddr(GlobalValue::UnnamedAddr::Global);
+      }
+      FileArg = IRBuilder<>(Ctx).CreateBitCast(GV, Int8PtrTy);
+      FileGlobals[Info.File.str()] = FileArg;
     }
     
     // Pick an appropriate insertion point for the execution tracking
@@ -237,8 +205,7 @@ PreservedAnalyses DynamicLineCountPass::run(Function &F, FunctionAnalysisManager
       Builder.SetInsertPoint(UnsafeInst);
     }
     
-    // Insert call to mark_unsafe_line_executed when this line is executed
-    Value *FileArg = Builder.CreateBitCast(GV, Int8PtrTy);
+    // Insert call to mark_unsafe_line_executed
     Builder.CreateCall(MarkUnsafeLine, {
       ConstantInt::get(Int64Ty, Info.Line),
       FileArg

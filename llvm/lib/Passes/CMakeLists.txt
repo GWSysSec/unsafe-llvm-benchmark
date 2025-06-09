@@ -37,6 +37,7 @@ add_llvm_component_library(LLVMPasses
   SourceCodeMapping
   InstMarker
   DynamicLineCount
+  CpuCycleCount
   HeapTracker
   # UNSAFE-RUST END
   )

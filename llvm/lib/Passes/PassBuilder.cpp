@@ -296,6 +296,7 @@
 // #include "llvm/Transforms/DebugInfoPreserve/DebugInfoPreserver.h"
 #include "llvm/Transforms/InstMarker/InstMarker.h"
 #include "llvm/Transforms/DynamicLineCount/DynamicLineCount.h"
+#include "llvm/Transforms/CpuCycleCount/CpuCycleCount.h"
 #include "llvm/Transforms/HeapTracker/HeapTracker.h"
 // UNSAFE-RUST END
 

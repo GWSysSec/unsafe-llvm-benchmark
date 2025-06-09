@@ -139,6 +139,7 @@
 #include "llvm/Transforms/Unsafe-rust-test-passes/LineCount.h"
 #include "llvm/Transforms/UnsafeRustDummy/UnsafeRustDummy.h"
 #include "llvm/Transforms/DynamicLineCount/DynamicLineCount.h"
+#include "llvm/Transforms/CpuCycleCount/CpuCycleCount.h"
 #include "llvm/Transforms/HeapTracker/HeapTracker.h"
 #include "llvm/Transforms/InstMarker/InstMarker.h"
 // UNSAFE-RUST END
@@ -300,11 +301,14 @@ static cl::opt<bool> EnableInstMarkerPass(
     "enable-inst-marker-pass", cl::init(false), cl::Hidden,
     cl::desc("Enable the InstMarker pass"));
 
-static cl::opt<bool> EnableDynamicLineCount(
-  "enable-dynamic-line-count", cl::init(false), cl::Hidden,
-  cl::desc("Enable the DynamicLineCount pass"));
+static cl::opt<bool> EnableHeapTrackerPass(
+    "enable-unsafe-rust-heap-tracker", cl::init(false), cl::Hidden,
+    cl::desc("Enable the HeapTracker pass"));
 
-// UNSAFE-RUST END
+static cl::opt<bool> EnableCpuCycleCount(
+    "enable-cpu-cycle-count", cl::init(false), cl::Hidden,
+    cl::desc("Enable the CpuCycleCount pass"));
+  // UNSAFE-RUST END
 
 namespace llvm {
 cl::opt<bool> EnableMemProfContextDisambiguation(
@@ -1547,14 +1551,23 @@ PassBuilder::buildPerModuleDefaultPipeline(OptimizationLevel Level,
     FunctionPassManager DLineFPM;
     DLineFPM.addPass(DynamicLineCountPass());
     MPM.addPass(createModuleToFunctionPassAdaptor(std::move(DLineFPM)));
-  }
-  if (Level == OptimizationLevel::O3) {
+
+    // CPU cycle counting for O0 (commented out, uncomment if needed)
+    // if (EnableCpuCycleCount) {
+    //   MPM.addPass(CpuCycleCountPass());
+    // }
+  } else if (Level == OptimizationLevel::O3) {
     // For O3, run InstMarker when enabled
     if (EnableInstMarkerPass) {
       llvm::errs() << "InstMarker enabled O3\n";
       FunctionPassManager InstFPM;
       InstFPM.addPass(InstMarkerPass());
       MPM.addPass(createModuleToFunctionPassAdaptor(std::move(InstFPM)));
+    }
+    
+    // Run CpuCycleCount when enabled (module-level pass)
+    if (EnableCpuCycleCount) {
+      MPM.addPass(CpuCycleCountPass());
     }
     
     // And run HeapTracker when enabled
@@ -2095,6 +2108,11 @@ ModulePassManager PassBuilder::buildO0DefaultPipeline(OptimizationLevel Level,
     DLineFPM.addPass(DynamicLineCountPass());
     MPM.addPass(createModuleToFunctionPassAdaptor(std::move(DLineFPM)));
   }
+  
+  // CPU cycle counting for O0 (commented out, uncomment if needed)
+  // if (EnableCpuCycleCount) {
+  //   MPM.addPass(CpuCycleCountPass());
+  // }
   
   if (EnableUnsafeRustDummyPass) {
     FunctionPassManager DummyFPM;
