@@ -68,6 +68,9 @@ UnsafeAnalysis::Result UnsafeAnalysis::run(Function &F, FunctionAnalysisManager 
   if (F.isDeclaration())
     return Result;
     
+  // Check if we should only instrument the primary package
+  bool OnlyPrimaryPackage = UnsafeAnalysisResult::isPrimaryPackage();
+  
   // Collect all unsafe instructions and their locations
   for (Instruction &I : instructions(F)) {
     if (!I.getMetadata("unsafe_inst"))
@@ -83,6 +86,11 @@ UnsafeAnalysis::Result UnsafeAnalysis::run(Function &F, FunctionAnalysisManager 
     StringRef File = Loc->getFilename();
     if (File.empty() || !UnsafeAnalysisResult::isProjectFile(File))
       continue;
+      
+    // Skip if we're only processing the primary package and this isn't in it
+    if (OnlyPrimaryPackage && !File.contains("src/")) {
+      continue;
+    }
       
     unsigned Line = Loc->getLine();
     
@@ -117,10 +125,6 @@ PreservedAnalyses UnsafeAnalysisPass::run(Function &F, FunctionAnalysisManager &
 PreservedAnalyses InstMarkerPass::run(Function &F, FunctionAnalysisManager &AM) {
   if (F.isDeclaration())
     return PreservedAnalyses::all();
-    
-  // Check if we should only instrument the primary package
-  if (!UnsafeAnalysisResult::isPrimaryPackage())
-    return PreservedAnalyses::all();
 
   // Get the analysis result
   auto &UnsafeResult = AM.getResult<UnsafeAnalysis>(F);
@@ -153,55 +157,45 @@ PreservedAnalyses InstMarkerPass::run(Function &F, FunctionAnalysisManager &AM) 
     Func->setLinkage(GlobalValue::ExternalLinkage);
   }
   
-  // Process each basic block
-  for (BasicBlock &BB : F) {
-    Instruction *FirstUnsafe = nullptr;
-    Instruction *LastUnsafe = nullptr;
+  // Process each basic block with unsafe instructions
+  for (auto &BlockEntry : UnsafeResult.UnsafeInstsByBlock) {
+    BasicBlock *BB = BlockEntry.first;
+    std::vector<Instruction*> &BlockUnsafeInsts = BlockEntry.second;
     
-    // Find the first and last unsafe instructions in the block
-    for (Instruction &I : BB) {
-      if (I.getMetadata("unsafe_inst")) {
-        if (!FirstUnsafe) {
-          FirstUnsafe = &I;
-        }
-        LastUnsafe = &I;
-      }
-    }
+    if (BlockUnsafeInsts.empty())
+      continue;
+      
+    // Find the first and last unsafe instructions
+    Instruction *FirstUnsafe = BlockUnsafeInsts.front();
+    Instruction *LastUnsafe = BlockUnsafeInsts.back();
     
-    // If unsafe instructions were found, insert markers
-    if (FirstUnsafe && LastUnsafe) {
-      // Insert marker_begin before the first unsafe instruction
-      IRBuilder<> Builder(FirstUnsafe);
-      Builder.CreateCall(AsmMarkerBegin);
-      
-      // Add call to total_unsafe_block_count with block size
-      int UnsafeCount = 0;
-      for (Instruction &I : BB) {
-        if (I.getMetadata("unsafe_inst"))
-          UnsafeCount++;
-      }
-      Builder.CreateCall(TotalUnsafeBlockFn, {
-        ConstantInt::get(Int64Ty, UnsafeCount)
-      });
-      
-      Modified = true;
-      
-      // Insert marker_end after the last unsafe instruction
-      if (Instruction *NextInst = LastUnsafe->getNextNode()) {
-        IRBuilder<> EndBuilder(NextInst);
-        EndBuilder.CreateCall(AsmMarkerEnd);
-      } else {
-        IRBuilder<> EndBuilder(&BB);
-        EndBuilder.SetInsertPoint(BB.getTerminator());
-        EndBuilder.CreateCall(AsmMarkerEnd);
-      }
+    // Insert marker_begin before the first unsafe instruction
+    IRBuilder<> Builder(FirstUnsafe);
+    Builder.CreateCall(AsmMarkerBegin);
+    
+    // Add call to total_unsafe_block_count with block size
+    Builder.CreateCall(TotalUnsafeBlockFn, {
+      ConstantInt::get(Int64Ty, BlockUnsafeInsts.size())
+    });
+    
+    Modified = true;
+    
+    // Insert marker_end after the last unsafe instruction
+    if (Instruction *NextInst = LastUnsafe->getNextNode()) {
+      IRBuilder<> EndBuilder(NextInst);
+      EndBuilder.CreateCall(AsmMarkerEnd);
+    } else {
+      IRBuilder<> EndBuilder(BB);
+      EndBuilder.SetInsertPoint(BB->getTerminator());
+      EndBuilder.CreateCall(AsmMarkerEnd);
     }
   }
   
   // Only output summary for functions with significant unsafe blocks
-  if (Modified && UnsafeResult.TotalUnsafeInst > 10) {
+  if (UnsafeResult.UnsafeInstsByBlock.size() > 0 && UnsafeResult.TotalUnsafeInst > 10) {
     errs() << "[InstMarker] " << F.getName() 
-         << " - " << UnsafeResult.TotalUnsafeInst << " unsafe instrs\n";
+         << " - " << UnsafeResult.TotalUnsafeInst << " unsafe instrs, " 
+         << UnsafeResult.UnsafeInstsByBlock.size() << " blocks\n";
   }
   
   return Modified ? PreservedAnalyses::none() : PreservedAnalyses::all();

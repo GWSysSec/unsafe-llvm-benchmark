@@ -52,9 +52,8 @@ PreservedAnalyses DynamicLineCountPass::run(Function &F, FunctionAnalysisManager
     return PreservedAnalyses::all();
   }
   
-  // Check if we should only instrument the primary package
-  if (!UnsafeAnalysisResult::isPrimaryPackage())
-    return PreservedAnalyses::all();
+  // Primary package filtering is already handled by InstMarker's UnsafeAnalysis
+  // No need to check again here since UnsafeAnalysis will already be filtered
 
   // Get the unsafe analysis result from InstMarkerPass
   auto &UnsafeResult = AM.getResult<UnsafeAnalysis>(F);

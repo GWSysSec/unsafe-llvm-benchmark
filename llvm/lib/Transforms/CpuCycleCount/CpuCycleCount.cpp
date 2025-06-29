@@ -37,9 +37,8 @@ PreservedAnalyses CpuCycleCountPass::run(Module &M, ModuleAnalysisManager &AM) {
   LLVMContext &Ctx = M.getContext();
   bool Modified = false;
 
-  // Check if we should only instrument the primary package
-  if (!UnsafeAnalysisResult::isPrimaryPackage())
-    return PreservedAnalyses::all();
+  // Primary package filtering is handled by InstMarker when it inserts markers
+  // CpuCycleCount only instruments where markers already exist, so no additional filtering needed
 
   // Prepare runtime function prototypes
   Type *VoidTy = Type::getVoidTy(Ctx);
