@@ -68,10 +68,11 @@ UnsafeAnalysis::Result UnsafeAnalysis::run(Function &F, FunctionAnalysisManager 
   if (F.isDeclaration())
     return Result;
     
-  // Check if we should only instrument the primary package
-  bool OnlyPrimaryPackage = UnsafeAnalysisResult::isPrimaryPackage();
+  // Early return if not processing primary package
+  if (!UnsafeAnalysisResult::isPrimaryPackage())
+    return Result;
   
-  // Collect all unsafe instructions and their locations
+  // Single-pass collection of unsafe instructions
   for (Instruction &I : instructions(F)) {
     if (!I.getMetadata("unsafe_inst"))
       continue;
@@ -87,18 +88,13 @@ UnsafeAnalysis::Result UnsafeAnalysis::run(Function &F, FunctionAnalysisManager 
     if (File.empty() || !UnsafeAnalysisResult::isProjectFile(File))
       continue;
       
-    // Skip if we're only processing the primary package and this isn't in it
-    if (OnlyPrimaryPackage && !File.contains("src/")) {
-      continue;
-    }
-      
     unsigned Line = Loc->getLine();
     
     Result.UnsafeInsts.push_back({&I, File, Line});
     Result.UnsafeInstsByBlock[I.getParent()].push_back(&I);
   }
   
-  // Sort instructions by their position in each block
+  // Lazy sorting: only sort blocks when they have unsafe instructions
   for (auto &BlockEntry : Result.UnsafeInstsByBlock) {
     std::vector<Instruction*> &BlockUnsafeInsts = BlockEntry.second;
     

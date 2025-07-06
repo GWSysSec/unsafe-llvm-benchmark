@@ -15,7 +15,7 @@
 #include <atomic>
 
 // Output file for CPU cycle statistics
-#define CYCLE_OUTPUT_FILE "/tmp/cpu_cycle_stat.stat"
+#define CYCLE_OUTPUT_FILE "cpu_cycle.stat"
 
 // Forward declarations
 static void print_cycles_on_exit(void);
@@ -25,6 +25,11 @@ static void write_cycle_file(uint64_t total_cycles, uint64_t total_blocks, doubl
 static std::atomic<uint64_t> total_unsafe_cycles{0};
 static std::atomic<uint64_t> total_unsafe_blocks{0};
 static std::atomic<int> runtime_initialized{0};
+
+// Total program cycle tracking
+static std::atomic<uint64_t> program_start_cycles{0};
+static std::atomic<uint64_t> total_program_cycles{0};
+static std::atomic<int> program_cycle_tracking_enabled{0};
 
 // Mutex for thread-safe operations that require consistency
 static pthread_mutex_t cycle_mutex = PTHREAD_MUTEX_INITIALIZER;
@@ -81,8 +86,30 @@ RUNTIME_EXPORT void cpu_cycle_end_measurement(uint64_t start_cycle) {
     total_unsafe_blocks.fetch_add(1);
 }
 
+// Start total program cycle tracking
+RUNTIME_EXPORT void cpu_cycle_program_start(void) {
+    if (runtime_initialized.load() == 0)
+        return;
+    
+    program_start_cycles.store(read_cpu_cycles());
+    program_cycle_tracking_enabled.store(1);
+}
+
+// End total program cycle tracking
+RUNTIME_EXPORT void cpu_cycle_program_end(void) {
+    if (runtime_initialized.load() == 0 || program_cycle_tracking_enabled.load() == 0)
+        return;
+    
+    uint64_t end_cycles = read_cpu_cycles();
+    uint64_t start_cycles = program_start_cycles.load();
+    
+    if (end_cycles >= start_cycles) {
+        total_program_cycles.store(end_cycles - start_cycles);
+    }
+}
+
 // Writes a cycle summary file in the /tmp directory
-static void write_cycle_file(uint64_t total_cycles, uint64_t total_blocks, double avg_cycles) {
+static void write_cycle_file(uint64_t total_cycles, uint64_t total_blocks, double avg_cycles, uint64_t program_cycles) {
     FILE* cycle_file = fopen(CYCLE_OUTPUT_FILE, "w");
     if (!cycle_file) {
         fprintf(stderr, "Failed to open cycle output file %s\n", CYCLE_OUTPUT_FILE);
@@ -90,10 +117,22 @@ static void write_cycle_file(uint64_t total_cycles, uint64_t total_blocks, doubl
     }
     
     // Write in a simple, consistent format
-    fprintf(cycle_file, "===== Unsafe Code CPU Cycle Statistics =====\n");
+    fprintf(cycle_file, "===== CPU Cycle Measurement Results =====\n");
+    fprintf(cycle_file, "CpuCycleCount Pass: EXECUTED\n");
+    fprintf(cycle_file, "Total Program Cycles: %lu\n", (unsigned long)program_cycles);
     fprintf(cycle_file, "Total Unsafe Blocks Executed: %lu\n", (unsigned long)total_blocks);
     fprintf(cycle_file, "Total CPU Cycles in Unsafe Code: %lu\n", (unsigned long)total_cycles);
-    fprintf(cycle_file, "Average Cycles Per Unsafe Block: %.2f\n", avg_cycles);
+    
+    if (total_blocks > 0) {
+        fprintf(cycle_file, "Average Cycles Per Unsafe Block: %.2f\n", avg_cycles);
+        if (program_cycles > 0) {
+            double unsafe_percentage = (double)total_cycles / program_cycles * 100.0;
+            fprintf(cycle_file, "Unsafe Code Percentage: %.2f%%\n", unsafe_percentage);
+        }
+    } else {
+        fprintf(cycle_file, "Average Cycles Per Unsafe Block: N/A (no unsafe blocks)\n");
+        fprintf(cycle_file, "Unsafe Code Percentage: 0.00%%\n");
+    }
     
     // Add some context about measurement precision
     fprintf(cycle_file, "\n===== Measurement Notes =====\n");
@@ -116,33 +155,43 @@ RUNTIME_EXPORT void print_cpu_cycle_stats(void) {
     
     uint64_t total_cycles = total_unsafe_cycles.load();
     uint64_t total_blocks = total_unsafe_blocks.load();
+    uint64_t program_cycles = total_program_cycles.load();
     
-    if (total_blocks == 0) {
-        printf("No unsafe code blocks were executed.\n");
-        pthread_mutex_unlock(&cycle_mutex);
-        return;
-    }
-    
-    double avg_cycles = (double)total_cycles / total_blocks;
-    
-    printf("\n=== Unsafe Code CPU Cycle Report ===\n\n");
+    printf("\n=== CPU Cycle Measurement Report ===\n\n");
+    printf("CpuCycleCount Pass: EXECUTED\n");
+    printf("Total Program Cycles: %lu\n", (unsigned long)program_cycles);
     printf("Total Unsafe Blocks Executed: %lu\n", (unsigned long)total_blocks);
     printf("Total CPU Cycles in Unsafe Code: %lu\n", (unsigned long)total_cycles);
-    printf("Average Cycles Per Unsafe Block: %.2f\n", avg_cycles);
     
-    // Write the cycle summary file
-    write_cycle_file(total_cycles, total_blocks, avg_cycles);
-    
-    // Performance insights
-    printf("\n=== Performance Insights ===\n");
-    if (avg_cycles < 100) {
-        printf("  ✅ Very fast unsafe operations (< 100 cycles/block)\n");
-    } else if (avg_cycles < 1000) {
-        printf("  ⚡ Fast unsafe operations (< 1000 cycles/block)\n");
-    } else if (avg_cycles < 10000) {
-        printf("  ⚠️  Moderate unsafe operations (< 10k cycles/block)\n");
+    double avg_cycles = 0.0;
+    if (total_blocks > 0) {
+        avg_cycles = (double)total_cycles / total_blocks;
+        printf("Average Cycles Per Unsafe Block: %.2f\n", avg_cycles);
+        
+        if (program_cycles > 0) {
+            double unsafe_percentage = (double)total_cycles / program_cycles * 100.0;
+            printf("Unsafe Code Percentage: %.2f%%\n", unsafe_percentage);
+        }
     } else {
-        printf("  🐌 Slow unsafe operations (> 10k cycles/block)\n");
+        printf("Average Cycles Per Unsafe Block: N/A (no unsafe blocks)\n");
+        printf("Unsafe Code Percentage: 0.00%%\n");
+    }
+    
+    // Write the cycle summary file (always write, even with 0 unsafe blocks)
+    write_cycle_file(total_cycles, total_blocks, avg_cycles, program_cycles);
+    
+    // Performance insights (only if there are unsafe blocks)
+    if (total_blocks > 0) {
+        printf("\n=== Performance Insights ===\n");
+        if (avg_cycles < 100) {
+            printf("  ✅ Very fast unsafe operations (< 100 cycles/block)\n");
+        } else if (avg_cycles < 1000) {
+            printf("  ⚡ Fast unsafe operations (< 1000 cycles/block)\n");
+        } else if (avg_cycles < 10000) {
+            printf("  ⚠️  Moderate unsafe operations (< 10k cycles/block)\n");
+        } else {
+            printf("  🐌 Slow unsafe operations (> 10k cycles/block)\n");
+        }
     }
     
     // Final status

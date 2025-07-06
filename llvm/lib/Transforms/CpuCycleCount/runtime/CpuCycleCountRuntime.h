@@ -27,6 +27,10 @@ RUNTIME_EXPORT void cpu_cycle_end_measurement(uint64_t start_cycle);
 // Statistics and reporting functions
 RUNTIME_EXPORT void print_cpu_cycle_stats(void);
 
+// Total program cycle tracking (independent of unsafe detection)
+RUNTIME_EXPORT void cpu_cycle_program_start(void);
+RUNTIME_EXPORT void cpu_cycle_program_end(void);
+
 #ifdef __cplusplus
 }
 #endif

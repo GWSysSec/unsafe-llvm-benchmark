@@ -37,6 +37,9 @@ PreservedAnalyses CpuCycleCountPass::run(Module &M, ModuleAnalysisManager &AM) {
   LLVMContext &Ctx = M.getContext();
   bool Modified = false;
 
+  // Debug message to confirm pass is running
+  errs() << "[CpuCycleCount] Pass started for module: " << M.getName() << "\n";
+
   // Primary package filtering is handled by InstMarker when it inserts markers
   // CpuCycleCount only instruments where markers already exist, so no additional filtering needed
 
@@ -54,11 +57,20 @@ PreservedAnalyses CpuCycleCountPass::run(Module &M, ModuleAnalysisManager &AM) {
   FunctionType *StatsFnTy = FunctionType::get(VoidTy, false);
   FunctionCallee StatsFn = M.getOrInsertFunction(CPU_CYCLE_STATS_FN, StatsFnTy);
   
+  // Program cycle tracking functions
+  FunctionType *ProgramStartFnTy = FunctionType::get(VoidTy, false);
+  FunctionCallee ProgramStartFn = M.getOrInsertFunction("cpu_cycle_program_start", ProgramStartFnTy);
+  
+  FunctionType *ProgramEndFnTy = FunctionType::get(VoidTy, false);
+  FunctionCallee ProgramEndFn = M.getOrInsertFunction("cpu_cycle_program_end", ProgramEndFnTy);
+  
   // Set function attributes for runtime calls
   for (auto *RuntimeFn : {
       dyn_cast<Function>(StartMeasureFn.getCallee()),
       dyn_cast<Function>(EndMeasureFn.getCallee()),
-      dyn_cast<Function>(StatsFn.getCallee())}) {
+      dyn_cast<Function>(StatsFn.getCallee()),
+      dyn_cast<Function>(ProgramStartFn.getCallee()),
+      dyn_cast<Function>(ProgramEndFn.getCallee())}) {
     if (RuntimeFn) {
       RuntimeFn->removeFnAttr(Attribute::ReadNone);
       RuntimeFn->removeFnAttr(Attribute::ReadOnly);
@@ -67,12 +79,24 @@ PreservedAnalyses CpuCycleCountPass::run(Module &M, ModuleAnalysisManager &AM) {
     }
   }
 
-  // Add statistics reporting at program exit for main function
+  // Add program cycle tracking and statistics reporting for main function
   if (Function *MainFn = M.getFunction("main")) {
+    // Add program start measurement at function entry
+    if (!MainFn->empty()) {
+      BasicBlock &EntryBB = MainFn->getEntryBlock();
+      if (!EntryBB.empty()) {
+        IRBuilder<> EntryBuilder(&EntryBB.front());
+        EntryBuilder.CreateCall(ProgramStartFn);
+        Modified = true;
+      }
+    }
+    
+    // Add program end measurement and statistics at function exit
     for (BasicBlock &BB : *MainFn) {
       for (Instruction &I : BB) {
         if (auto *RetInst = dyn_cast<ReturnInst>(&I)) {
           IRBuilder<> Builder(RetInst);
+          Builder.CreateCall(ProgramEndFn);
           Builder.CreateCall(StatsFn);
           Modified = true;
           break;
@@ -142,11 +166,15 @@ PreservedAnalyses CpuCycleCountPass::run(Module &M, ModuleAnalysisManager &AM) {
     }
   }
   
-  // Output summary for significant instrumentation
-  if (instrumentedBlocks > 0) {
-    errs() << "[CpuCycleCount] Instrumented " << instrumentedBlocks 
-           << " unsafe blocks for cycle measurement\n";
+  // Output summary
+  errs() << "[CpuCycleCount] Instrumented " << instrumentedBlocks 
+         << " unsafe blocks for cycle measurement\n";
+  
+  if (Function *MainFn = M.getFunction("main")) {
+    errs() << "[CpuCycleCount] Added program cycle tracking to main function\n";
   }
+  
+  errs() << "[CpuCycleCount] Pass completed. Modified=" << (Modified ? "true" : "false") << "\n";
   
   return Modified ? PreservedAnalyses::none() : PreservedAnalyses::all();
 }
