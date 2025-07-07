@@ -15,7 +15,7 @@
 #include <atomic>
 
 // Output file for CPU cycle statistics
-#define CYCLE_OUTPUT_FILE "cpu_cycle.stat"
+#define CYCLE_OUTPUT_FILE "/tmp/cpu_cycle.stat"
 
 // Forward declarations
 static void print_cycles_on_exit(void);

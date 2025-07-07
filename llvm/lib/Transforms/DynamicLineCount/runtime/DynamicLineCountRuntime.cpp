@@ -17,7 +17,7 @@
 // Simple data structures to avoid STL dependencies
 #define MAX_FILES 500
 #define MAX_LINES_PER_FILE 65536
-#define COVERAGE_OUTPUT_FILE "/tmp/coverage_stat.stat"
+#define COVERAGE_OUTPUT_FILE "/tmp/unsafe_coverage.stat"
 
 // Forward declaration
 static void print_coverage_on_exit(void);

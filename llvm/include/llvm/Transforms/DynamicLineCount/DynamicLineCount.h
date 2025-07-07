@@ -35,15 +35,15 @@ namespace llvm {
 // These must match the exported symbols in the runtime library
 inline constexpr const char *UPDATE_UNSAFE_LINE_FN = "update_unsafe_line_counter";
 inline constexpr const char *MARK_UNSAFE_LINE_FN = "mark_unsafe_line_executed";
-// Block count function directly referenced in cpp file
+// Legacy block count function - maintained for backward compatibility
 
 /// DynamicLineCountPass - This pass instruments code with calls to the runtime 
 /// library to track execution of unsafe Rust code at the line level.
 ///
-/// It depends on InstMarker pass for identification of unsafe instructions and block marking.
+/// It depends on InstMarker pass for identification of unsafe instructions only.
 /// The relationship between the passes is:
 /// 1. InstMarker: Identifies unsafe instructions and inserts marker_begin/marker_end
-///    with calls to total_unsafe_block_count() for each block
+///    boundary markers for downstream analysis passes
 /// 2. DynamicLineCount: Focuses on line-level coverage analysis by:
 ///    a. Registering all unsafe lines at program startup
 ///    b. Tracking execution of individual unsafe instructions during runtime
