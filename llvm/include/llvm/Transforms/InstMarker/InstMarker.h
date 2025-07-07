@@ -29,9 +29,6 @@ namespace llvm {
 static const char *UNSAFE_MARKER_BEGIN = "nop # marker_begin";
 static const char *UNSAFE_MARKER_END = "nop # marker_end";
 
-// Runtime function name constants
-static const char *TOTAL_UNSAFE_BLOCK_FN = "total_unsafe_block_count";
-
 // Information about an unsafe instruction
 struct UnsafeInstrInfo {
   Instruction *Inst;

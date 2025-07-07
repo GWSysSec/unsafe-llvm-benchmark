@@ -1,27 +1,34 @@
 # InstMarker Pass
 
-An LLVM pass for marking and tracking unsafe instructions in Rust code. This pass identifies instructions marked with "unsafe_inst" metadata and inserts special inline assembly markers around blocks of unsafe code.
+An LLVM pass for marking unsafe instructions in Rust code. This pass serves as the **foundation layer** of the unsafe code analysis infrastructure, providing clean boundaries for downstream analysis passes.
 
 ## Core Functionality
 
-- **Unsafe Analysis**: Provides a foundational analysis for identifying and tracking unsafe code across the codebase
-- **Instruction Marking**: Adds inline assembly markers around unsafe instruction blocks
-- **Runtime Tracking**: Inserts calls to runtime functions for counting unsafe blocks
+- **Unsafe Analysis**: Identifies instructions marked with "unsafe_inst" metadata
+- **Instruction Marking**: Inserts inline assembly markers (`marker_begin`/`marker_end`) around unsafe code blocks
+- **Foundation Layer**: Provides a clean interface for other passes without runtime dependencies
 
-## Implementation Details
+## Architecture
 
-The pass consists of two primary components:
+InstMarker follows a **minimal foundation design**:
 
-1. **UnsafeAnalysis**: Analyzes functions for unsafe instructions and prepares data structures for use by transformation passes
-2. **InstMarkerPass**: Uses the UnsafeAnalysis results to insert assembly markers and runtime calls
+1. **UnsafeAnalysis**: Analyzes functions and groups unsafe instructions by basic block
+2. **InstMarkerPass**: Inserts only `marker_begin` and `marker_end` inline assembly around unsafe blocks
 
-## Integration
+**No runtime calls** - InstMarker stays simple and lets downstream passes handle their own measurement/tracking.
 
-This pass serves as the foundation for the unsafe code analysis infrastructure. It's designed to:
+## Integration with Other Passes
 
-- Run early in the optimization pipeline
-- Provide analysis results for other passes like DynamicLineCount
-- Insert markers used by HeapTracker for memory access tracking
+InstMarker serves as the foundation for:
+
+- **CpuCycleCount**: Measures CPU cycles between `marker_begin`/`marker_end`
+- **DynamicLineCount**: Tracks line coverage using the markers
+- **HeapTracker**: Monitors memory operations within marked regions
+
+Each downstream pass:
+1. Scans for `marker_begin`/`marker_end` inline assembly
+2. Implements its own runtime tracking and measurement
+3. Maintains independence from other passes
 
 ## Usage
 

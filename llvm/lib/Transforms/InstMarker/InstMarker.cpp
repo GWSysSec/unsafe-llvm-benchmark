@@ -140,18 +140,6 @@ PreservedAnalyses InstMarkerPass::run(Function &F, FunctionAnalysisManager &AM) 
   InlineAsm *AsmMarkerEnd = InlineAsm::get(FunctionType::get(VoidTy, false),
                                            UNSAFE_MARKER_END, "", true);
 
-  // Prepare runtime function prototype for block counting
-  Type *Int64Ty = Type::getInt64Ty(Ctx);
-  FunctionType *TotalBlockFnTy = FunctionType::get(VoidTy, {Int64Ty}, false);
-  FunctionCallee TotalUnsafeBlockFn = M->getOrInsertFunction(TOTAL_UNSAFE_BLOCK_FN, TotalBlockFnTy);
-
-  // Set function attributes
-  if (auto *Func = dyn_cast<Function>(TotalUnsafeBlockFn.getCallee())) {
-    Func->removeFnAttr(Attribute::ReadNone);
-    Func->removeFnAttr(Attribute::ReadOnly);
-    Func->addFnAttr(Attribute::NoInline);
-    Func->setLinkage(GlobalValue::ExternalLinkage);
-  }
   
   // Process each basic block with unsafe instructions
   for (auto &BlockEntry : UnsafeResult.UnsafeInstsByBlock) {
@@ -168,11 +156,6 @@ PreservedAnalyses InstMarkerPass::run(Function &F, FunctionAnalysisManager &AM) 
     // Insert marker_begin before the first unsafe instruction
     IRBuilder<> Builder(FirstUnsafe);
     Builder.CreateCall(AsmMarkerBegin);
-    
-    // Add call to total_unsafe_block_count with block size
-    Builder.CreateCall(TotalUnsafeBlockFn, {
-      ConstantInt::get(Int64Ty, BlockUnsafeInsts.size())
-    });
     
     Modified = true;
     
