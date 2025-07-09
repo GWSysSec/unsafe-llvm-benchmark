@@ -26,32 +26,15 @@
 #define LLVM_TRANSFORMS_DYNAMICLINECOUNT_DYNAMICLINECOUNT_H
 
 #include "llvm/IR/PassManager.h"
-#include "llvm/IR/Function.h"
-#include "llvm/Transforms/InstMarker/InstMarker.h"
+#include "llvm/IR/Module.h"
 
 namespace llvm {
 
-// Runtime function name constants specific to DynamicLineCount
-// These must match the exported symbols in the runtime library
 inline constexpr const char *UPDATE_UNSAFE_LINE_FN = "update_unsafe_line_counter";
 inline constexpr const char *MARK_UNSAFE_LINE_FN = "mark_unsafe_line_executed";
-// Legacy block count function - maintained for backward compatibility
 
-/// DynamicLineCountPass - This pass instruments code with calls to the runtime 
-/// library to track execution of unsafe Rust code at the line level.
-///
-/// It depends on InstMarker pass for identification of unsafe instructions only.
-/// The relationship between the passes is:
-/// 1. InstMarker: Identifies unsafe instructions and inserts marker_begin/marker_end
-///    boundary markers for downstream analysis passes
-/// 2. DynamicLineCount: Focuses on line-level coverage analysis by:
-///    a. Registering all unsafe lines at program startup
-///    b. Tracking execution of individual unsafe instructions during runtime
 struct DynamicLineCountPass : PassInfoMixin<DynamicLineCountPass> {
-  /// Main entry point - instruments unsafe code for runtime tracking
-  PreservedAnalyses run(Function &F, FunctionAnalysisManager &AM);
-  
-  /// This pass is required for unsafe code tracking
+  PreservedAnalyses run(Module &M, ModuleAnalysisManager &AM);
   static bool isRequired() { return true; }
 };
 

@@ -1,165 +1,83 @@
-//===--- InstMarker.cpp - Mark and track unsafe instructions --------------===//
-//
-// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
-// See https://llvm.org/LICENSE.txt for license information.
-// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
-//
-//===----------------------------------------------------------------------===//
-//
-// InstMarker is the foundation pass for unsafe Rust code analysis. It:
-// 1. Identifies instructions with "unsafe_inst" metadata
-// 2. Inserts marker_begin/marker_end assembly markers around unsafe blocks
-// 3. Calls total_unsafe_block_count() to track block execution
-// 4. Provides analysis results for use by other passes (like DynamicLineCount)
-// 5. Supports primary package filtering with CARGO_PRIMARY_PACKAGE=1
-//
-//===----------------------------------------------------------------------===//
-
 #include "llvm/Transforms/InstMarker/InstMarker.h"
 #include "llvm/IR/Function.h"
 #include "llvm/IR/InlineAsm.h"
 #include "llvm/IR/IRBuilder.h"
-#include "llvm/IR/Metadata.h"
-#include "llvm/IR/Instructions.h"
 #include "llvm/IR/InstIterator.h"
-#include "llvm/IR/DebugInfoMetadata.h"
-#include "llvm/IR/Constants.h"
-#include "llvm/Transforms/Utils/BasicBlockUtils.h"
-#include <set>
+#include "llvm/IR/Instructions.h"
+#include "llvm/IR/BasicBlock.h"
+#include "llvm/IR/Type.h"
+#include "llvm/IR/DerivedTypes.h"
+#include "llvm/IR/Module.h"
+#include "llvm/IR/LLVMContext.h"
+#include "llvm/Support/raw_ostream.h"
 #include <map>
-#include <string>
-#include <algorithm>
 #include <vector>
+#include <algorithm>
 #include <cstring>
 #include <cstdlib>
 
 using namespace llvm;
 
-// Implement the Analysis Key
-AnalysisKey UnsafeAnalysis::Key;
-
-// Implement utility functions
-std::string UnsafeAnalysisResult::sanitizeFileName(const std::string &File) {
-  std::string Name = File;
-  std::replace(Name.begin(), Name.end(), '/', '_');
-  std::replace(Name.begin(), Name.end(), '\\', '_');
-  std::replace(Name.begin(), Name.end(), '.', '_');
-  return Name;
+namespace llvm {
+const char *UNSAFE_MARKER_BEGIN = "nop # marker_begin";
+const char *UNSAFE_MARKER_END = "nop # marker_end";
 }
 
-bool UnsafeAnalysisResult::isProjectFile(StringRef File) {
-  // Skip standard library and toolchain files
-  if (File.contains("/rustc/") || File.contains("/.cargo/") || 
-      File.contains("/library/"))
-    return false;
-  return true;
-}
-
-bool UnsafeAnalysisResult::isPrimaryPackage() {
-  // Only instrument the primary package if CARGO_PRIMARY_PACKAGE=1
+bool InstMarkerPass::isPrimaryPackage() {
   const char *p = std::getenv("CARGO_PRIMARY_PACKAGE");
   return p && std::strcmp(p, "1") == 0;
 }
 
-// Implement UnsafeAnalysis to collect and analyze unsafe instructions
-UnsafeAnalysis::Result UnsafeAnalysis::run(Function &F, FunctionAnalysisManager &AM) {
-  UnsafeAnalysisResult Result;
-  
-  if (F.isDeclaration())
-    return Result;
-    
-  // Early return if not processing primary package
-  if (!UnsafeAnalysisResult::isPrimaryPackage())
-    return Result;
-  
-  // Single-pass collection of unsafe instructions
+PreservedAnalyses InstMarkerPass::run(Function &F, FunctionAnalysisManager &AM) {
+  if (F.isDeclaration() || !isPrimaryPackage())
+    return PreservedAnalyses::all();
+
+  std::map<BasicBlock*, std::vector<Instruction*>> UnsafeInstsByBlock;
+  int TotalUnsafeInst = 0;
+
   for (Instruction &I : instructions(F)) {
-    if (!I.getMetadata("unsafe_inst"))
-      continue;
-      
-    Result.TotalUnsafeInst++;
-    
-    DebugLoc DL = I.getDebugLoc();
-    if (!DL)
-      continue;
-      
-    const DILocation *Loc = DL.get();
-    StringRef File = Loc->getFilename();
-    if (File.empty() || !UnsafeAnalysisResult::isProjectFile(File))
-      continue;
-      
-    unsigned Line = Loc->getLine();
-    
-    Result.UnsafeInsts.push_back({&I, File, Line});
-    Result.UnsafeInstsByBlock[I.getParent()].push_back(&I);
+    if (I.getMetadata("unsafe_inst")) {
+      UnsafeInstsByBlock[I.getParent()].push_back(&I);
+      TotalUnsafeInst++;
+    }
   }
-  
-  // Lazy sorting: only sort blocks when they have unsafe instructions
-  for (auto &BlockEntry : Result.UnsafeInstsByBlock) {
+
+  if (TotalUnsafeInst == 0)
+    return PreservedAnalyses::all();
+
+  for (auto &BlockEntry : UnsafeInstsByBlock) {
     std::vector<Instruction*> &BlockUnsafeInsts = BlockEntry.second;
-    
-    // Sort instructions by their position in the block
     std::sort(BlockUnsafeInsts.begin(), BlockUnsafeInsts.end(),
-      [&](Instruction *A, Instruction *B) {
+      [](Instruction *A, Instruction *B) {
         return A->comesBefore(B);
       });
   }
-  
-  return Result;
-}
 
-// Implement the wrapper pass that returns PreservedAnalyses
-PreservedAnalyses UnsafeAnalysisPass::run(Function &F, FunctionAnalysisManager &AM) {
-  // Run the analysis
-  AM.getResult<UnsafeAnalysis>(F);
-  
-  // The analysis doesn't modify anything
-  return PreservedAnalyses::all();
-}
-
-// Implement InstMarkerPass to mark unsafe blocks and insert runtime calls
-PreservedAnalyses InstMarkerPass::run(Function &F, FunctionAnalysisManager &AM) {
-  if (F.isDeclaration())
-    return PreservedAnalyses::all();
-
-  // Get the analysis result
-  auto &UnsafeResult = AM.getResult<UnsafeAnalysis>(F);
-  
-  // If there are no unsafe instructions, nothing to do
-  if (UnsafeResult.TotalUnsafeInst == 0)
-    return PreservedAnalyses::all();
-  
   Module *M = F.getParent();
   LLVMContext &Ctx = M->getContext();
-  bool Modified = false;
-
-  // Prepare for inline assembly markers
   Type *VoidTy = Type::getVoidTy(Ctx);
   InlineAsm *AsmMarkerBegin = InlineAsm::get(FunctionType::get(VoidTy, false),
-                                             UNSAFE_MARKER_BEGIN, "", true);
+                                             UNSAFE_MARKER_BEGIN, 
+                                             "~{memory}", true);
   InlineAsm *AsmMarkerEnd = InlineAsm::get(FunctionType::get(VoidTy, false),
-                                           UNSAFE_MARKER_END, "", true);
+                                           UNSAFE_MARKER_END, 
+                                           "~{memory}", true);
+  bool Modified = false;
 
-  
-  // Process each basic block with unsafe instructions
-  for (auto &BlockEntry : UnsafeResult.UnsafeInstsByBlock) {
+  for (auto &BlockEntry : UnsafeInstsByBlock) {
     BasicBlock *BB = BlockEntry.first;
     std::vector<Instruction*> &BlockUnsafeInsts = BlockEntry.second;
     
     if (BlockUnsafeInsts.empty())
       continue;
       
-    // Find the first and last unsafe instructions
     Instruction *FirstUnsafe = BlockUnsafeInsts.front();
     Instruction *LastUnsafe = BlockUnsafeInsts.back();
     
-    // Insert marker_begin before the first unsafe instruction
     IRBuilder<> Builder(FirstUnsafe);
     Builder.CreateCall(AsmMarkerBegin);
-    
     Modified = true;
     
-    // Insert marker_end after the last unsafe instruction
     if (Instruction *NextInst = LastUnsafe->getNextNode()) {
       IRBuilder<> EndBuilder(NextInst);
       EndBuilder.CreateCall(AsmMarkerEnd);
@@ -170,12 +88,17 @@ PreservedAnalyses InstMarkerPass::run(Function &F, FunctionAnalysisManager &AM) 
     }
   }
   
-  // Only output summary for functions with significant unsafe blocks
-  if (UnsafeResult.UnsafeInstsByBlock.size() > 0 && UnsafeResult.TotalUnsafeInst > 10) {
+  if (UnsafeInstsByBlock.size() > 0 && TotalUnsafeInst > 0) {
     errs() << "[InstMarker] " << F.getName() 
-         << " - " << UnsafeResult.TotalUnsafeInst << " unsafe instrs, " 
-         << UnsafeResult.UnsafeInstsByBlock.size() << " blocks\n";
+           << " - " << TotalUnsafeInst << " unsafe instrs, " 
+           << UnsafeInstsByBlock.size() << " blocks\n";
   }
   
-  return Modified ? PreservedAnalyses::none() : PreservedAnalyses::all();
+  if (Modified) {
+    PreservedAnalyses PA;
+    PA.preserveSet<AllAnalysesOn<Function>>();
+    return PA;
+  }
+  
+  return PreservedAnalyses::all();
 }
