@@ -35,25 +35,6 @@ CpuCycleCount uses RDTSCP (Read Time Stamp Counter and Processor ID) instruction
 - **File Output**: `cpu_cycle.stat` with detailed measurements
 - **Performance Insights**: Categorized performance analysis
 
-## Runtime File Format
-
-The `cpu_cycle.stat` file contains:
-
-```
-===== CPU Cycle Measurement Results =====
-CpuCycleCount Pass: EXECUTED
-Total Program Cycles: 1234567890
-Total Unsafe Blocks Executed: 42
-Total CPU Cycles in Unsafe Code: 987654
-Average Cycles Per Unsafe Block: 23515.57
-Unsafe Code Percentage: 0.08%
-
-===== Measurement Notes =====
-Measurement Method: RDTSCP (Serializing)
-Includes: Instruction execution + memory access cycles
-Excludes: OS context switches and interrupts
-```
-
 ## Integration
 
 ### Build Configuration
@@ -68,9 +49,8 @@ add_llvm_component_library(LLVMCpuCycleCount
 
 ### Compiler Integration
 ```bash
-# Enable both InstMarker (foundation) and CpuCycleCount
+# Enable CpuCycleCount
 rustc --emit=llvm-ir \
-  -C llvm-args=-enable-inst-marker-pass \
   -C llvm-args=-enable-cpu-cycle-count \
   -C link-arg=-lLLVMCpuCycleCount
 ```
@@ -123,14 +103,6 @@ unsafe {
     // This block will be measured
     *ptr = value;
 }
-```
-
-### Analysis Output
-```
-=== Performance Insights ===
-  ⚡ Fast unsafe operations (< 1000 cycles/block)
-  
-  📊 CPU cycle measurement completed successfully
 ```
 
 ## Troubleshooting

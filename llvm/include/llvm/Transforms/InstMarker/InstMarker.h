@@ -2,7 +2,6 @@
 #define LLVM_TRANSFORMS_INSTMARKER_INSTMARKER_H
 
 #include "llvm/IR/PassManager.h"
-#include "llvm/IR/Function.h"
 
 namespace llvm {
 

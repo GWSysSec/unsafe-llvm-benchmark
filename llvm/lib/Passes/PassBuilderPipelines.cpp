@@ -1523,12 +1523,12 @@ PassBuilder::buildPerModuleDefaultPipeline(OptimizationLevel Level,
   ModulePassManager MPM;
 
 
-  FunctionPassManager FPM;
+  //FunctionPassManager FPM;
   // UNSAFE-RUST BEGIN
   // Run InstMarkerPass - single pass approach
-  FunctionPassManager InstFPM;
-  InstFPM.addPass(InstMarkerPass());
-  MPM.addPass(createModuleToFunctionPassAdaptor(std::move(InstFPM)));
+  //FunctionPassManager InstFPM;
+  //InstFPM.addPass(InstMarkerPass());
+  //MPM.addPass(createModuleToFunctionPassAdaptor(std::move(InstFPM)));
   // UNSAFE-RUST END
 
   // Convert @llvm.global.annotations to !annotation metadata.
@@ -1558,6 +1558,14 @@ PassBuilder::buildPerModuleDefaultPipeline(OptimizationLevel Level,
 
   // Emit annotation remarks.
   addAnnotationRemarksPass(MPM);
+
+  FunctionPassManager FPM;
+  // UNSAFE-RUST BEGIN
+  // Run InstMarkerPass - single pass approach
+  FunctionPassManager InstFPM;
+  InstFPM.addPass(InstMarkerPass());
+  MPM.addPass(createModuleToFunctionPassAdaptor(std::move(InstFPM)));
+  // UNSAFE-RUST END
 
   // UNSAFE-RUST BEGIN
   // Post-optimization stats collection - placed after all optimizations

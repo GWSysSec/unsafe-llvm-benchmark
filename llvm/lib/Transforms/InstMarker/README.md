@@ -4,7 +4,6 @@ An LLVM pass for marking unsafe instructions in Rust code. This pass serves as t
 
 ## Core Functionality
 
-- **Unsafe Analysis**: Identifies instructions marked with "unsafe_inst" metadata
 - **Instruction Marking**: Inserts inline assembly markers (`marker_begin`/`marker_end`) around unsafe code blocks
 - **Foundation Layer**: Provides a clean interface for other passes without runtime dependencies
 
@@ -12,8 +11,7 @@ An LLVM pass for marking unsafe instructions in Rust code. This pass serves as t
 
 InstMarker follows a **minimal foundation design**:
 
-1. **UnsafeAnalysis**: Analyzes functions and groups unsafe instructions by basic block
-2. **InstMarkerPass**: Inserts only `marker_begin` and `marker_end` inline assembly around unsafe blocks
+**InstMarkerPass**: Inserts only `marker_begin` and `marker_end` inline assembly around unsafe blocks
 
 **No runtime calls** - InstMarker stays simple and lets downstream passes handle their own measurement/tracking.
 
@@ -32,10 +30,4 @@ Each downstream pass:
 
 ## Usage
 
-To run this pass:
-
-```bash
-opt -load-pass-plugin=LLVMInstMarker.so -passes=instmarker input.ll -o output.ll
-```
-
-This pass can also be integrated into the Rust compiler pipeline by adding appropriate flags to rustc.
+This pass has been integrated into the Rust compiler pipeline.

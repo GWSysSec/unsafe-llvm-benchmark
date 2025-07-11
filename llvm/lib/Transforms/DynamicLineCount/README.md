@@ -9,7 +9,6 @@ DynamicLineCount instruments unsafe Rust code to provide comprehensive line-leve
 ## Architecture
 
 ### Pass Component (DynamicLineCount.cpp)
-- **Unsafe Analysis Integration**: Uses `UnsafeAnalysis` from InstMarker to identify unsafe instructions
 - **Line Registration**: Registers all unsafe lines at program startup via module constructors
 - **Execution Tracking**: Instruments each unsafe instruction with runtime calls
 - **Primary Package Filtering**: Respects `CARGO_PRIMARY_PACKAGE=1` environment variable
@@ -89,9 +88,8 @@ add_llvm_component_library(LLVMDynamicLineCount
 
 ### Compiler Integration
 ```bash
-# Enable both InstMarker (foundation) and DynamicLineCount
+# Enable DynamicLineCount
 rustc --emit=llvm-ir \
-  -C llvm-args=-enable-inst-marker-pass \
   -C llvm-args=-enable-dynamic-line-count \
   -C link-arg=-lLLVMDynamicLineCount
 ```
@@ -105,7 +103,7 @@ The runtime exports these symbols:
 
 ## Dependencies
 
-- **InstMarker**: Provides `UnsafeAnalysis` for unsafe instruction identification
+- **InstMarker**: Provides unsafe instruction identification
 - **pthreads**: For thread-safe operations and mutex protection
 - **C++ atomics**: For lock-free counter operations
 - **Debug Information**: Requires debug metadata for source line mapping

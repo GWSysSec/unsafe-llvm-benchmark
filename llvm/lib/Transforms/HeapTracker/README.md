@@ -20,10 +20,14 @@ This pass builds on top of the InstMarker pass:
 
 ## Usage
 
-To run this pass:
-
+### Compiler Integration
 ```bash
-opt -load-pass-plugin=LLVMHeapTracker.so -passes=heap-tracker input.ll -o output.ll
+# Enable CpuCycleCount
+rustc --emit=llvm-ir \
+  -C llvm-args=-enable-heap-tracker \
+  -Z unstable-options \
+  --extern force:unsafe_perf=/home/oscar/Projects/unsafebench/unsafebench-expr/lib/perf/target/release/deps/libunsafe_perf-9c644cd274fb6d62.rlib \
+  -L/home/oscar/Projects/unsafebench/unsafebench-expr/lib/perf/target/release/deps
 ```
 
 This pass can also be integrated into the Rust compiler pipeline by adding appropriate flags to rustc.
