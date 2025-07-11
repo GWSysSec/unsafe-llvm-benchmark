@@ -1,12 +1,11 @@
 #include "llvm/Transforms/HeapTracker/HeapTracker.h"
+#include "llvm/Transforms/InstMarker/InstMarker.h"
 #include "llvm/IR/Type.h"
 #include "llvm/IR/DerivedTypes.h"
 #include "llvm/IR/Instructions.h"
 #include "llvm/IR/InlineAsm.h"
 #include "llvm/IR/Constants.h"
 
-static const char *UNSAFE_MARKER_BEGIN      = "nop # marker_begin";
-static const char *UNSAFE_MARKER_END        = "nop # marker_end";
 static const char *DYN_MEM_ACCESS_FN        = "dyn_mem_access";
 static const char *DYN_UNSAFE_MEM_ACCESS_FN = "dyn_unsafe_mem_access";
 
@@ -56,8 +55,16 @@ static void instrumentUnsafeMemInst(Function &F, FunctionCallee dynUnsafeMemAcce
         if (InlineAsm *IA = dyn_cast<InlineAsm>(CI->getCalledOperand())) {
           StringRef AsmStr = IA->getAsmString();
           if (AsmStr == UNSAFE_MARKER_BEGIN) {
+            if (unsafeBlockStarted) {
+              // Nested marker_begin - skip
+              continue;
+            }
             unsafeBlockStarted = true;
           } else if (AsmStr == UNSAFE_MARKER_END) {
+            if (!unsafeBlockStarted) {
+              // Unmatched marker_end - skip
+              continue;
+            }
             unsafeBlockStarted = false;
           }
         }

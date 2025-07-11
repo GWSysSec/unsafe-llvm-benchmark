@@ -96,7 +96,7 @@ PreservedAnalyses CpuCycleCountPass::run(Module &M, ModuleAnalysisManager &AM) {
             if (AsmStr.contains("marker_begin")) {
               ActiveMarkerBegin = &I;
             } else if (AsmStr.contains("marker_end")) {
-              if (ActiveMarkerBegin) {
+              if (ActiveMarkerBegin && ActiveMarkerBegin->getParent() == I.getParent()) {
                 IRBuilder<> StartBuilder(ActiveMarkerBegin->getNextNode());
                 Value *StartCycles = StartBuilder.CreateCall(StartMeasureFn, {}, "start_cycles");
 

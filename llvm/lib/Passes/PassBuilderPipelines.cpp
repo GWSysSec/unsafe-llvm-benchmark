@@ -1520,15 +1520,20 @@ PassBuilder::buildPerModuleDefaultPipeline(OptimizationLevel Level,
   if (Level == OptimizationLevel::O0)
     return buildO0DefaultPipeline(Level, LTOPreLink);
 
+  
   ModulePassManager MPM;
 
-
-  //FunctionPassManager FPM;
   // UNSAFE-RUST BEGIN
   // Run InstMarkerPass - single pass approach
-  //FunctionPassManager InstFPM;
-  //InstFPM.addPass(InstMarkerPass());
-  //MPM.addPass(createModuleToFunctionPassAdaptor(std::move(InstFPM)));
+  FunctionPassManager InstFPM;
+  InstFPM.addPass(InstMarkerPass());
+  MPM.addPass(createModuleToFunctionPassAdaptor(std::move(InstFPM)));
+
+  if (EnableUnsafeRustDummyPass) {
+    FunctionPassManager DummyFPM;
+    DummyFPM.addPass(UnsafeRustDummyPass());
+    MPM.addPass(createModuleToFunctionPassAdaptor(std::move(DummyFPM)));
+  }
   // UNSAFE-RUST END
 
   // Convert @llvm.global.annotations to !annotation metadata.
@@ -1559,12 +1564,11 @@ PassBuilder::buildPerModuleDefaultPipeline(OptimizationLevel Level,
   // Emit annotation remarks.
   addAnnotationRemarksPass(MPM);
 
-  FunctionPassManager FPM;
   // UNSAFE-RUST BEGIN
   // Run InstMarkerPass - single pass approach
-  FunctionPassManager InstFPM;
-  InstFPM.addPass(InstMarkerPass());
-  MPM.addPass(createModuleToFunctionPassAdaptor(std::move(InstFPM)));
+  //FunctionPassManager InstFPM;
+  //InstFPM.addPass(InstMarkerPass());
+  //MPM.addPass(createModuleToFunctionPassAdaptor(std::move(InstFPM)));
   // UNSAFE-RUST END
 
   // UNSAFE-RUST BEGIN

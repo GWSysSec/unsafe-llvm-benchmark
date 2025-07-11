@@ -34,8 +34,6 @@ static inline uint64_t read_cpu_cycles(void) {
     __asm__ volatile (
         "rdtscp"
         : "=a" (lo), "=d" (hi), "=c" (aux)
-        :
-        : "memory"
     );
     return ((uint64_t)hi << 32) | lo;
 }
@@ -58,9 +56,8 @@ RUNTIME_EXPORT void cpu_cycle_end_measurement(uint64_t start_cycle) {
 }
 
 RUNTIME_EXPORT void cpu_cycle_program_start(void) {
-    if (!initialized.load())
-        return;
-    program_begin_cycles = read_cpu_cycles();
+    // Keep the constructor's timestamp - don't reset
+    return;
 }
 
 RUNTIME_EXPORT void cpu_cycle_program_end(void) {
