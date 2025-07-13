@@ -27,19 +27,16 @@ PreservedAnalyses InstMarkerPass::run(Function &F, FunctionAnalysisManager &AM) 
 
   bool Modified = false;
 
-  // Prototype for Inline Assembly markers
   auto *VoidTy = Type::getVoidTy(F.getContext());
   InlineAsm *AsmMarkerBegin = InlineAsm::get(FunctionType::get(VoidTy, false),
                                              UNSAFE_MARKER_BEGIN, "", true);
   InlineAsm *AsmMarkerEnd = InlineAsm::get(FunctionType::get(VoidTy, false),
                                            UNSAFE_MARKER_END, "", true);
 
-  // Process each basic block to add markers around unsafe instructions
   for (BasicBlock &BB : F) {
     Instruction *FirstUnsafeInst = nullptr;
     Instruction *LastUnsafeInst = nullptr;
 
-    // Find the first and last unsafe instructions in the block
     for (Instruction &I : BB) {
       if (I.getMetadata("unsafe_inst")) {
         if (!FirstUnsafeInst) {
@@ -49,14 +46,11 @@ PreservedAnalyses InstMarkerPass::run(Function &F, FunctionAnalysisManager &AM) 
       }
     }
 
-    // Insert markers if unsafe instructions were found
     if (FirstUnsafeInst && LastUnsafeInst) {
-      // Insert marker_begin before the first unsafe instruction
       IRBuilder<> Builder(FirstUnsafeInst);
       Builder.CreateCall(AsmMarkerBegin);
       Modified = true;
 
-      // Insert marker_end after the last unsafe instruction
       if (Instruction *NextInst = LastUnsafeInst->getNextNode()) {
         IRBuilder<> EndBuilder(NextInst);
         EndBuilder.CreateCall(AsmMarkerEnd);
