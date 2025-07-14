@@ -1,10 +1,3 @@
-//===--- CpuCycleCount.cpp - Counting CPU cycles for unsafe blocks ---*- C++ -*-===//
-//
-// This pass instruments unsafe code blocks to measure the CPU cycles they consume.
-// It relies on markers previously inserted by the InstMarkerPass.
-//
-//===----------------------------------------------------------------------===//
-
 #include "llvm/Transforms/CpuCycleCount/CpuCycleCount.h"
 #include "llvm/Transforms/InstMarker/InstMarker.h"
 #include "llvm/IR/Function.h"
@@ -26,6 +19,7 @@ using namespace llvm;
 static const char *START_MEASUREMENT_FN = "cpu_cycle_start_measurement";
 static const char *END_MEASUREMENT_FN   = "cpu_cycle_end_measurement";
 static const char *PRINT_STATS_FN       = "print_cpu_cycle_stats";
+static const char *TOUCH_TRACKER_FN     = "touch_thread_tracker";
 
 /// @brief Instruments unsafe blocks marked by InstMarkerPass to measure CPU cycles.
 /// @param F The target function.
@@ -34,6 +28,7 @@ static const char *PRINT_STATS_FN       = "print_cpu_cycle_stats";
 /// @return True if the function was modified, false otherwise.
 static bool instrumentUnsafeBlocks(Function &F, FunctionCallee startFn, FunctionCallee endFn) {
     bool Modified = false;
+    LLVMContext &Ctx = F.getContext();
 
     for (BasicBlock &BB : F) {
         Instruction *ActiveMarkerBegin = nullptr;
@@ -43,9 +38,9 @@ static bool instrumentUnsafeBlocks(Function &F, FunctionCallee startFn, Function
                 if (auto *InlineAsmCall = dyn_cast<InlineAsm>(CallInst->getCalledOperand()->stripPointerCasts())) {
                     StringRef AsmStr = InlineAsmCall->getAsmString();
 
-                    if (AsmStr == UNSAFE_MARKER_BEGIN) {
+                    if (AsmStr.contains("marker_begin")) {
                         ActiveMarkerBegin = &I;
-                    } else if (AsmStr == UNSAFE_MARKER_END) {
+                    } else if (AsmStr.contains("marker_end")) {
                         if (ActiveMarkerBegin) {
                             IRBuilder<> StartBuilder(ActiveMarkerBegin->getNextNode());
                             Value *StartCycles = StartBuilder.CreateCall(startFn, {});
@@ -66,36 +61,44 @@ static bool instrumentUnsafeBlocks(Function &F, FunctionCallee startFn, Function
 
 PreservedAnalyses CpuCycleCountPass::run(Module &M, ModuleAnalysisManager &AM) {
     LLVMContext &Ctx = M.getContext();
-
-    // Define the function prototypes for the Rust runtime functions.
     Type *VoidTy = Type::getVoidTy(Ctx);
     Type *Int64Ty = Type::getInt64Ty(Ctx);
 
+    FunctionCallee TouchTrackerFn = M.getOrInsertFunction(
+        TOUCH_TRACKER_FN, FunctionType::get(VoidTy, false));
     FunctionCallee StartMeasureFn = M.getOrInsertFunction(
         START_MEASUREMENT_FN, FunctionType::get(Int64Ty, false));
-
     FunctionCallee EndMeasureFn = M.getOrInsertFunction(
         END_MEASUREMENT_FN, FunctionType::get(VoidTy, {Int64Ty}, false));
-
     FunctionCallee StatsFn = M.getOrInsertFunction(
         PRINT_STATS_FN, FunctionType::get(VoidTy, false));
-    
-    // Ensure the runtime functions are not inlined and are externally linked.
-    for (auto *FnHandle : {&StartMeasureFn, &EndMeasureFn, &StatsFn}) {
+
+    // Ensure the runtime functions are not inlined and are externally linked
+    for (auto *FnHandle : {&TouchTrackerFn, &StartMeasureFn, &EndMeasureFn, &StatsFn}) {
         if (auto *F = dyn_cast<Function>(FnHandle->getCallee())) {
             F->addFnAttr(Attribute::NoInline);
             F->setLinkage(GlobalValue::ExternalLinkage);
         }
     }
 
-    // Register the stats printing function to be called at program exit.
+    // Register the stats printing function to be called at program exit
     appendToGlobalDtors(M, cast<Function>(StatsFn.getCallee()), 0);
 
     bool Modified = false;
     for (Function &F : M) {
-        if (F.isDeclaration())
+        // Skip function declarations and our own runtime functions
+        if (F.isDeclaration() || F.getName() == TOUCH_TRACKER_FN ||
+            F.getName() == START_MEASUREMENT_FN || F.getName() == END_MEASUREMENT_FN ||
+            F.getName() == PRINT_STATS_FN) {
             continue;
-        
+        }
+
+        // Instrument the entry of every function to initialize the thread tracker
+        IRBuilder<> Builder(&F.getEntryBlock().front());
+        Builder.CreateCall(TouchTrackerFn, {});
+        Modified = true;
+
+        // Runs the logic to instrument specific unsafe blocks
         if (instrumentUnsafeBlocks(F, StartMeasureFn, EndMeasureFn)) {
             Modified = true;
         }

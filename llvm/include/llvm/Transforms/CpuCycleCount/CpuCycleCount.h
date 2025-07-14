@@ -9,6 +9,7 @@ namespace llvm {
 inline constexpr const char *CPU_CYCLE_START_FN = "cpu_cycle_start_measurement";
 inline constexpr const char *CPU_CYCLE_END_FN = "cpu_cycle_end_measurement";
 inline constexpr const char *CPU_CYCLE_STATS_FN = "print_cpu_cycle_stats";
+inline constexpr const char *CPU_CYCLE_TOUCH_FN = "touch_thread_tracker";
 
 struct CpuCycleCountPass : PassInfoMixin<CpuCycleCountPass> {
   PreservedAnalyses run(Module &M, ModuleAnalysisManager &AM);
