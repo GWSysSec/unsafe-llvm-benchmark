@@ -293,6 +293,10 @@ static cl::opt<bool> EnableLineCountPass(
   "enable-line-count", cl::init(false), cl::Hidden,
   cl::desc("Enable the LineCount pass"));
 
+static cl::opt<bool> EnableDynamicLineCount(
+  "enable-dynamic-line-count", cl::init(false), cl::Hidden,
+  cl::desc("Enable the DynamicLineCount pass"));
+
 static cl::opt<bool> EnableHeapTrackerPass(
     "enable-unsafe-rust-heap-tracker", cl::init(false), cl::Hidden,
     cl::desc("Enable the HeapTracker pass"));
@@ -300,10 +304,6 @@ static cl::opt<bool> EnableHeapTrackerPass(
 static cl::opt<bool> EnableInstMarkerPass(
     "enable-inst-marker-pass", cl::init(false), cl::Hidden,
     cl::desc("Enable the InstMarker pass"));
-
-static cl::opt<bool> EnableHeapTrackerPass(
-    "enable-unsafe-rust-heap-tracker", cl::init(false), cl::Hidden,
-    cl::desc("Enable the HeapTracker pass"));
 
 static cl::opt<bool> EnableCpuCycleCount(
     "enable-cpu-cycle-count", cl::init(false), cl::Hidden,
@@ -1619,10 +1619,10 @@ PassBuilder::buildPerModuleDefaultPipeline(OptimizationLevel Level,
   if (LTOPreLink)
     addRequiredLTOPreLinkPasses(MPM);
 
-  //if (EnableLineCountPass) {
-  //  llvm::errs() << "InstMarker enabled O3\n";
-  //  MPM.addPass(LineCount()); //LineCount after main optimisations
-  //}
+  if (EnableLineCountPass) {
+    llvm::errs() << "InstMarker enabled O3\n";
+    MPM.addPass(LineCount()); //LineCount after main optimisations
+  }
   
   return MPM;
 }
@@ -2120,11 +2120,10 @@ ModulePassManager PassBuilder::buildO0DefaultPipeline(OptimizationLevel Level,
     MPM.addPass(createModuleToFunctionPassAdaptor(std::move(DummyFPM)));
   }
 
-  if (EnableLineCountPass && LineCountRunCheck == false) {
-    llvm::errs() << "LineCount enabled O0\n";
-    llvm::errs() << "LineCountRunCheck = " << LineCountRunCheck << "\n";
-    MPM.addPass(LineCount()); //LineCount after main optimisations
-  }
+  //if (EnableLineCountPass) {
+  //  llvm::errs() << "LineCount enabled O0\n";
+  //  MPM.addPass(LineCount()); //LineCount after main optimisations
+  //}
   // UNSAFE-RUST END
 
 

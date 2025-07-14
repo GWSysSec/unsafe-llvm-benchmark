@@ -129,8 +129,8 @@ PreservedAnalyses LineCount::run(Module &M,
 
     J.object([&] {
         J.attribute("module_name", M.getName()); //Module name
-        J.attribute("total_instruction_count", total_line_count); //Total instruction count
-        J.attribute("total_unsafe_instruction_count", total_unsafe_line_count); //Total unsafe instruction count
+        J.attribute("total_IR_count", total_line_count); //Total instruction count
+        J.attribute("total_unsafe_IR_count", total_unsafe_line_count); //Total unsafe instruction count
         J.attribute("total_unsafe_add", unsafe_add_instructions); //Total unsafe add instruction count
         J.attribute("total_unsafe_load", unsafe_load_instructions); //Total unsafe load instruction count
         J.attribute("total_unsafe_store", unsafe_store_instructions); //Total unsafe store instruction count
@@ -140,7 +140,7 @@ PreservedAnalyses LineCount::run(Module &M,
         J.attribute("total_unsafe_ptrtoint", unsafe_ptrtoint_instructions); //Total unsafe ptrtoint instruction count
         J.attribute("total_unsafe_inttoptr", unsafe_inttoptr_instructions); //Total unsafe inttoptr instruction count
         J.attribute("total_unsafe_bitcast", unsafe_bitcast_instructions); //Total unsafe bitcast instruction count
-        J.attribute("functions_with_unsafe_instructions", functions_with_unsafe_instructions); //Total IR functions with unsafe code in them
+        J.attribute("functions_with_unsafe_IR", functions_with_unsafe_instructions); //Total IR functions with unsafe code in them
         J.attribute("percent_unsafe", percent_unsafe); //Percentage unsafe code
     });
 
