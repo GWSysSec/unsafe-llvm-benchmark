@@ -1523,6 +1523,8 @@ PassBuilder::buildPerModuleDefaultPipeline(OptimizationLevel Level,
   
   ModulePassManager MPM;
 
+  FunctionPassManager FPM;
+
   // UNSAFE-RUST BEGIN
   // Run InstMarkerPass - single pass approach
   FunctionPassManager InstFPM;
@@ -1582,6 +1584,10 @@ PassBuilder::buildPerModuleDefaultPipeline(OptimizationLevel Level,
     FunctionPassManager HeapFPM;
     HeapFPM.addPass(HeapTrackerPass());
     MPM.addPass(createModuleToFunctionPassAdaptor(std::move(HeapFPM)));
+  }
+
+  if (EnableDynamicLineCount) {
+    MPM.addPass(DynamicLineCountPass());
   }
   // UNSAFE-RUST END
 

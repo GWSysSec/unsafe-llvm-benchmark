@@ -1,18 +1,43 @@
+//===-- CpuCycleCount.h - Track unsafe instruction execution time -*- C++ -*-===//
+//
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+///
+/// \file
+/// This file declares the CpuCycleCount pass for tracking unsafe instruction
+/// execution time.
+///
+//===----------------------------------------------------------------------===//
+
 #ifndef LLVM_TRANSFORMS_CPUCYCLECOUNT_CPUCYCLECOUNT_H
 #define LLVM_TRANSFORMS_CPUCYCLECOUNT_CPUCYCLECOUNT_H
 
 #include "llvm/IR/PassManager.h"
-#include "llvm/IR/Module.h"
+
+namespace llvm {
+class Module;
+}
 
 namespace llvm {
 
-inline constexpr const char *CPU_CYCLE_START_FN = "cpu_cycle_start_measurement";
-inline constexpr const char *CPU_CYCLE_END_FN = "cpu_cycle_end_measurement";
-inline constexpr const char *CPU_CYCLE_STATS_FN = "print_cpu_cycle_stats";
-inline constexpr const char *CPU_CYCLE_TOUCH_FN = "touch_thread_tracker";
+extern const char *START_MEASUREMENT_FN;
+extern const char *END_MEASUREMENT_FN;
+extern const char *CPU_CYCLE_PRINT_STATS_FN;
+extern const char *TOUCH_TRACKER_FN;
 
-struct CpuCycleCountPass : PassInfoMixin<CpuCycleCountPass> {
+/// \brief Pass that tracks CPU cycle count for unsafe instruction execution.
+///
+/// This pass instruments unsafe code blocks marked by InstMarkerPass to measure
+/// CPU cycles. It inserts calls to runtime functions at the beginning and end
+/// of unsafe blocks, and registers a destructor to print statistics at program
+/// exit.
+class CpuCycleCountPass : public PassInfoMixin<CpuCycleCountPass> {
+public:
   PreservedAnalyses run(Module &M, ModuleAnalysisManager &AM);
+  
   static bool isRequired() { return true; }
 };
 
