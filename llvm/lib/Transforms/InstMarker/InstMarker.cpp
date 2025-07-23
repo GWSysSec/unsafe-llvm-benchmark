@@ -4,12 +4,12 @@
 // See https://llvm.org/LICENSE.txt for license information.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
-//===----------------------------------------------------------------------===//
+//===-----------------------------------------------------------------------------===//
 ///
 /// \file
 /// This file implements the InstMarker pass for marking unsafe code blocks.
 ///
-//===----------------------------------------------------------------------===//
+//===----------------------------------------------------------------------------===//
 
 #include "llvm/Transforms/InstMarker/InstMarker.h"
 #include "llvm/ADT/StringRef.h"

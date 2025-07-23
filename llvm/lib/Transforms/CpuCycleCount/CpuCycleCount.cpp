@@ -4,37 +4,36 @@
 // See https://llvm.org/LICENSE.txt for license information.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
-//===----------------------------------------------------------------------===//
+//===-------------------------------------------------------------------------------------===//
 ///
 /// \file
 /// This file implements the CpuCycleCount pass for tracking unsafe instruction
 /// execution time.
 ///
-//===----------------------------------------------------------------------==//
+//===--------------------------------------------------------------------------------------==//
 
 #include "llvm/Transforms/CpuCycleCount/CpuCycleCount.h"
-#include "llvm/Transforms/InstMarker/InstMarker.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/IR/Attributes.h"
 #include "llvm/IR/BasicBlock.h"
 #include "llvm/IR/DerivedTypes.h"
 #include "llvm/IR/Function.h"
 #include "llvm/IR/GlobalValue.h"
-#include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/InlineAsm.h"
 #include "llvm/IR/Instructions.h"
+#include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/Module.h"
 #include "llvm/IR/Type.h"
 #include "llvm/Support/Casting.h"
+#include "llvm/Transforms/InstMarker/InstMarker.h"
 #include "llvm/Transforms/Utils/ModuleUtils.h"
 
 using namespace llvm;
 
-// These constants are defined to match the header declarations.
 const char *llvm::START_MEASUREMENT_FN = "cpu_cycle_start_measurement";
-const char *llvm::END_MEASUREMENT_FN   = "cpu_cycle_end_measurement";
+const char *llvm::END_MEASUREMENT_FN = "cpu_cycle_end_measurement";
 const char *llvm::CPU_CYCLE_PRINT_STATS_FN = "print_cpu_cycle_stats";
-const char *llvm::TOUCH_TRACKER_FN     = "touch_thread_tracker";
+const char *llvm::TOUCH_TRACKER_FN = "touch_thread_tracker";
 
 namespace {
 
@@ -92,7 +91,6 @@ PreservedAnalyses CpuCycleCountPass::run(Module &M, ModuleAnalysisManager &AM) {
     FunctionCallee StatsFn = M.getOrInsertFunction(
         CPU_CYCLE_PRINT_STATS_FN, FunctionType::get(VoidTy, false));
 
-    // Ensure the runtime functions are not inlined and are externally linked
     for (auto *FnHandle : {&TouchTrackerFn, &StartMeasureFn, &EndMeasureFn, &StatsFn}) {
         if (auto *F = dyn_cast<Function>(FnHandle->getCallee())) {
             F->addFnAttr(Attribute::NoInline);
@@ -100,24 +98,20 @@ PreservedAnalyses CpuCycleCountPass::run(Module &M, ModuleAnalysisManager &AM) {
         }
     }
 
-    // Register the stats printing function to be called at program exit
     appendToGlobalDtors(M, cast<Function>(StatsFn.getCallee()), 0);
 
     bool Modified = false;
     for (Function &F : M) {
-        // Skip function declarations and our own runtime functions
         if (F.isDeclaration() || F.getName() == TOUCH_TRACKER_FN ||
             F.getName() == START_MEASUREMENT_FN || F.getName() == END_MEASUREMENT_FN ||
             F.getName() == CPU_CYCLE_PRINT_STATS_FN) {
             continue;
         }
 
-        // Instrument the entry of every function to initialize the thread tracker
         IRBuilder<> Builder(&F.getEntryBlock().front());
         Builder.CreateCall(TouchTrackerFn, {});
         Modified = true;
 
-        // Runs the logic to instrument specific unsafe blocks
         if (instrumentUnsafeBlocks(F, StartMeasureFn, EndMeasureFn)) {
             Modified = true;
         }

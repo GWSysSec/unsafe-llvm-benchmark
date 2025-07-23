@@ -4,16 +4,14 @@
 // See https://llvm.org/LICENSE.txt for license information.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
-//===----------------------------------------------------------------------===//
+//===-------------------------------------------------------------------------------===//
 ///
 /// \file
 /// This file implements the HeapTracker pass for tracking memory access to heap.
 ///
-//===----------------------------------------------------------------------===//
+//===-------------------------------------------------------------------------------===//
 
 #include "llvm/Transforms/HeapTracker/HeapTracker.h"
-#include "llvm/Transforms/InstMarker/InstMarker.h"
-#include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/IR/BasicBlock.h"
 #include "llvm/IR/Constants.h"
@@ -25,10 +23,10 @@
 #include "llvm/IR/Module.h"
 #include "llvm/IR/Type.h"
 #include "llvm/Support/Casting.h"
+#include "llvm/Transforms/InstMarker/InstMarker.h"
 
 using namespace llvm;
 
-// These constants are defined to match the header declarations.
 const char *llvm::DYN_MEM_ACCESS_FN = "dyn_mem_access";
 const char *llvm::DYN_UNSAFE_MEM_ACCESS_FN = "dyn_unsafe_mem_access";
 
@@ -46,7 +44,6 @@ void instrumentMemInst(Function &F, FunctionCallee DynMemAccessFn) {
       }
     }
 
-    // Insert a call to dyn_mem_access() before each memory instruction.
     for (Instruction *MemInst : memInsts) {
       IRBuilder<> Builder(MemInst);
       Value *DestAddr = isa<LoadInst>(MemInst) ?
@@ -65,7 +62,6 @@ void instrumentUnsafeMemInst(Function &F, FunctionCallee DynUnsafeMemAccessFn) {
     Instruction *ActiveMarkerBegin = nullptr;
 
     for (Instruction &I : BB) {
-      // If we are in an unsafe block, find memory instructions and instrument them immediately.
       if (ActiveMarkerBegin) {
         if (isa<LoadInst>(I) || isa<StoreInst>(I)) {
             IRBuilder<> Builder(&I);
@@ -77,7 +73,6 @@ void instrumentUnsafeMemInst(Function &F, FunctionCallee DynUnsafeMemAccessFn) {
         }
       }
 
-      // Check for markers with proper pair validation.
       if (auto *CI = dyn_cast<CallInst>(&I)) {
         if (auto *IA = dyn_cast<InlineAsm>(CI->getCalledOperand())) {
           StringRef AsmStr = IA->getAsmString();
@@ -98,8 +93,7 @@ void instrumentUnsafeMemInst(Function &F, FunctionCallee DynUnsafeMemAccessFn) {
 
 PreservedAnalyses HeapTrackerPass::run(Function &F,
                                        FunctionAnalysisManager &AM) {
-  // Define fn prototypes of dyn_mem_access() and dyn_unsafe_mem_access()
-  // defined in the Rust runlib lib.
+
   LLVMContext &C = F.getContext();
   Module *M = F.getParent();
   Type *VoidTy = Type::getVoidTy(C);
@@ -113,10 +107,8 @@ PreservedAnalyses HeapTrackerPass::run(Function &F,
   FunctionCallee DynUnsafeMemAccessFn = M->getOrInsertFunction(
     DYN_UNSAFE_MEM_ACCESS_FN, DynUnsafeMemAccessFnTy);
 
-  // First, insert calls to dyn_mem_access for all memory accesses.
   instrumentMemInst(F, DynMemAccessFn);
 
-  // Then, insert calls to dyn_unsafe_mem_access for memory accesses within unsafe blocks.
   instrumentUnsafeMemInst(F, DynUnsafeMemAccessFn);
   
   return PreservedAnalyses::all();

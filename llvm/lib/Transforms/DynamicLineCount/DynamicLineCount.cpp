@@ -4,16 +4,15 @@
 // See https://llvm.org/LICENSE.txt for license information.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
-//===----------------------------------------------------------------------===//
+//===-----------------------------------------------------------------------------------===//
 ///
 /// \file
-/// This file implements the DynamicLineCount pass for tracking unsafe source
-/// line coverage.
+/// This file implements the DynamicLineCount pass for tracking unsafe 
+/// source line coverage.
 ///
-//===----------------------------------------------------------------------==//
+//===------------------------------------------------------------------------------------==//
 
 #include "llvm/Transforms/DynamicLineCount/DynamicLineCount.h"
-#include "llvm/Transforms/InstMarker/InstMarker.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/IR/BasicBlock.h"
 #include "llvm/IR/Constants.h"
@@ -23,11 +22,12 @@
 #include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/InlineAsm.h"
 #include "llvm/IR/Instructions.h"
+#include "llvm/IR/LLVMContext.h"
 #include "llvm/IR/Metadata.h"
 #include "llvm/IR/Module.h"
 #include "llvm/IR/Type.h"
-#include "llvm/IR/LLVMContext.h"
 #include "llvm/Support/Casting.h"
+#include "llvm/Transforms/InstMarker/InstMarker.h"
 #include "llvm/Transforms/Utils/ModuleUtils.h"
 #include <map>
 #include <set>
@@ -176,8 +176,9 @@ PreservedAnalyses DynamicLineCountPass::run(Module &M, ModuleAnalysisManager &AM
 
   // Instrument all functions to track execution and collect line info
   for (Function &F : M) {
-    if (F.isDeclaration() || F.getName().startswith("register_") ||
-        F.getName().startswith("execute_") || F.getName().startswith("print_")) {
+    if (F.isDeclaration() || F.getName().starts_with("register_") ||
+        F.getName().starts_with("execute_") ||
+        F.getName().starts_with("print_")) {
       continue;
     }
     // Pass the map to be populated.
