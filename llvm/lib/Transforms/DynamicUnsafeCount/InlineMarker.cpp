@@ -10,14 +10,25 @@
 #include "llvm/IR/Metadata.h"
 #include "llvm/Transforms/Utils/BasicBlockUtils.h"
 #include "llvm/IR/PassManager.h"
+#include "llvm/IR/DebugInfoMetadata.h"
 #include <vector>
 
+//Function to check if the crate is a primary crate or whether it is an dependency
+static bool isPrimaryPackage() {
+    const char *p = std::getenv("CARGO_PRIMARY_PACKAGE");
+    return p && std::strcmp(p, "1") == 0;
+}
 
 using namespace llvm;
 
 PreservedAnalyses InlineMarker::run(Function &F,
                                            FunctionAnalysisManager &AM) {
-bool modified = false;
+
+
+    if (!isPrimaryPackage())
+    return PreservedAnalyses::all();  
+    
+    bool modified = false;
 
         // Prototype for Inline Assembly markers
         auto *VoidTy = Type::getVoidTy(F.getContext());

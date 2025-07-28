@@ -1,4 +1,4 @@
-//===--------------InlineCountUnsafe.cpp----------------===//
+//===--------------FunctionCount.cpp----------------===//
 // This pass will log the function behavior during runtime.
 
 #include "llvm/Transforms/DynamicUnsafeCount/FunctionCount.h"
@@ -17,22 +17,29 @@
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/IR/IntrinsicInst.h"
 
+//Function to check if the crate is a primary crate or whether it is an dependency
+static bool isPrimaryPackage() {
+    const char *p = std::getenv("CARGO_PRIMARY_PACKAGE");
+    return p && std::strcmp(p, "1") == 0;
+}
 
 
 using namespace llvm;
 
 PreservedAnalyses FunctionCount::run(Function &F,
                                            FunctionAnalysisManager &AM) {
+
+
+                                            if (!isPrimaryPackage())
+                                            return PreservedAnalyses::all();  
     Module *M = F.getParent();
     LLVMContext &Context = M->getContext();
 
-    // Demangle function name for better readability - For debugging
+    // Demangles function name for better readability - For debugging
     std::string DemangledName = llvm::demangle(F.getName().str());
-    //    errs() << "Instrumenting function (demangled): " << DemangledName << "\n";
 
     // Skips functions that are declarations (external) or intrinsic functions
     if (F.isDeclaration() || F.isIntrinsic()) {
-    //    errs() << "Skipping function: " << DemangledName << " (external or intrinsic)\n";
         return PreservedAnalyses::all();
     }
 
@@ -41,7 +48,6 @@ PreservedAnalyses FunctionCount::run(Function &F,
     // Excludes functions from Rust standard library/runtime
     if (DemangledName.find("std::") == 0 || DemangledName.find("core::") == 0 || 
         DemangledName.find("alloc::") == 0 || DemangledName.find("rustc_") == 0) {
-    //    errs() << "Skipping Rust standard/library function: " << DemangledName << "\n";
         return PreservedAnalyses::all();
     }
 
@@ -72,17 +78,15 @@ PreservedAnalyses FunctionCount::run(Function &F,
                     InlineAsm *inlineAsm = dyn_cast<InlineAsm>(asmInst->getCalledOperand());
                     std::string asmString = inlineAsm->getAsmString();
 
-                    // Checking for markers to target the unsafe instructions
+                    // Checks for markers to target the unsafe instructions
                     if (asmString.find("nop # marker_begin") != std::string::npos) {
                         insideMarkers = true;
                     } 
                 }
             }
 
-            //MDNode *Metadata =
+
             if ((insideMarkers == true) &&  (I.getMetadata("unsafe_inst")) && (I.getOpcode() != Instruction::Ret)) {
-    //              errs() << "Instruction in function " << F.getName()
-    //                     << " has metadata: unsafe_inst\n";
                 if (auto *intrinsicInst = dyn_cast<IntrinsicInst>(&I)) {
                     if (intrinsicInst->getIntrinsicID() == Intrinsic::lifetime_start ||
                         intrinsicInst->getIntrinsicID() == Intrinsic::lifetime_end) {
@@ -96,20 +100,13 @@ PreservedAnalyses FunctionCount::run(Function &F,
         if (IsUnsafeFunction) break; // Exits the loop once unsafe instruction is found
     }
 
- 
-    // if (!F.isDeclaration()) {
-    //     IRBuilder<> Builder(&*F.getEntryBlock().getFirstInsertionPt());
-    //     Value *FuncName = Builder.CreateGlobalStringPtr(F.getName());
-    //     Value *IsUnsafe = Builder.getInt1(IsUnsafeFunction);
-    //     Builder.CreateCall(RecordFuncExec, {FuncName, IsUnsafe});
-    // }
 
     if (!F.isDeclaration()) {
         // Find the last basic block in the function
         BasicBlock &LastBB = F.back();
         Instruction *Terminator = LastBB.getTerminator(); // Get the terminator (likely a return)
     
-        IRBuilder<> Builder(Terminator); // Insert before the return instruction
+        IRBuilder<> Builder(Terminator); // Inserts before the return instruction
         Value *FuncName = Builder.CreateGlobalStringPtr(F.getName());
         Value *IsUnsafe = Builder.getInt1(IsUnsafeFunction);
         Builder.CreateCall(RecordFuncExec, {FuncName, IsUnsafe});

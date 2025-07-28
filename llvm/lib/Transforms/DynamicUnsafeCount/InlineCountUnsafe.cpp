@@ -9,11 +9,26 @@
 #include "llvm/Passes/PassBuilder.h"
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/IR/IntrinsicInst.h"
+#include "llvm/IR/DebugInfoMetadata.h"
+
+//Function to check if the crate is a primary crate or whether it is an dependency
+static bool isPrimaryPackage() {
+    const char *p = std::getenv("CARGO_PRIMARY_PACKAGE");
+    return p && std::strcmp(p, "1") == 0;
+}
+
+
 
 using namespace llvm;
 
+
 PreservedAnalyses InlineCountUnsafe::run(Function &F,
                                            FunctionAnalysisManager &AM) {
+
+    if (!isPrimaryPackage())
+        return PreservedAnalyses::all();  
+
+
         bool modified = false;
         Module *M = F.getParent();
         LLVMContext &Context = M->getContext();
