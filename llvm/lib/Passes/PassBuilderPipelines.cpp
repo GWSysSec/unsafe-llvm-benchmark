@@ -141,6 +141,7 @@
 #include "llvm/Transforms/DynamicLineCount/DynamicLineCount.h"
 #include "llvm/Transforms/CpuCycleCount/CpuCycleCount.h"
 #include "llvm/Transforms/HeapTracker/HeapTracker.h"
+#include "llvm/Transforms/UnsafeCount/UnsafeCount.h"
 // UNSAFE-RUST END
 
 using namespace llvm;
@@ -300,6 +301,11 @@ static cl::opt<bool> EnableHeapTrackerPass(
 static cl::opt<bool> EnableCpuCycleCount(
   "enable-cpu-cycle-count", cl::init(false), cl::Hidden,
   cl::desc("Enable the CpuCycleCount pass"));
+
+static cl::opt<bool> EnableUnsafeCount(
+  "enable-unsafe-count", cl::init(false), cl::Hidden,
+  cl::desc("Enable the UnsafeCount pass")
+);
   // UNSAFE-RUST END
 
 namespace llvm {
@@ -1584,6 +1590,12 @@ PassBuilder::buildPerModuleDefaultPipeline(OptimizationLevel Level,
     FunctionPassManager HeapFPM;
     HeapFPM.addPass(HeapTrackerPass());
     MPM.addPass(createModuleToFunctionPassAdaptor(std::move(HeapFPM)));
+  }
+
+  if (EnableUnsafeCount) {
+    FunctionPassManager UnsafeFPM;
+    UnsafeFPM.addPass(UnsafeCountPass());
+    MPM.addPass(createModuleToFunctionPassAdaptor(std::move(UnsafeFPM))); 
   }
 
   if (EnableDynamicLineCount) {

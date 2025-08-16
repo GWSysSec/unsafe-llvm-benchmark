@@ -460,6 +460,7 @@ FUNCTION_PASS("view-post-dom", PostDomViewer())
 FUNCTION_PASS("view-post-dom-only", PostDomOnlyViewer())
 FUNCTION_PASS("wasm-eh-prepare", WasmEHPreparePass())
 FUNCTION_PASS("unsafe-rust-dummy", UnsafeRustDummyPass())
+FUNCTION_PASS("unsafe-count", UnsafeCountPass())
 #undef FUNCTION_PASS
 
 #ifndef FUNCTION_PASS_WITH_PARAMS
