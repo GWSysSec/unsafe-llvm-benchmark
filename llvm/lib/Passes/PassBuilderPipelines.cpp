@@ -1582,9 +1582,6 @@ PassBuilder::buildPerModuleDefaultPipeline(OptimizationLevel Level,
   // UNSAFE-RUST BEGIN
   // Post-optimization stats collection - placed after all optimizations
   // to capture final optimized code characteristics and prevent optimization away
-  if (EnableCpuCycleCount) {
-    MPM.addPass(CpuCycleCountPass());
-  }
 
   if (EnableHeapTrackerPass) {
     FunctionPassManager HeapFPM;
@@ -1598,8 +1595,12 @@ PassBuilder::buildPerModuleDefaultPipeline(OptimizationLevel Level,
     MPM.addPass(createModuleToFunctionPassAdaptor(std::move(UnsafeFPM))); 
   }
 
-  if (EnableDynamicLineCount) {
-    MPM.addPass(DynamicLineCountPass());
+  //if (EnableDynamicLineCount) {
+  //  MPM.addPass(DynamicLineCountPass());
+  //}
+
+  if (EnableCpuCycleCount) {
+    MPM.addPass(CpuCycleCountPass());
   }
   // UNSAFE-RUST END
 

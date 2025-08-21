@@ -82,6 +82,20 @@ UnsafeCountPass::RuntimeContext UnsafeCountPass::setupRuntimeFunctions(Module &M
   return RC;
 }
 
+bool UnsafeCountPass::isMarkerInstruction(const Instruction &I) {
+  if (auto *CallInst = dyn_cast<CallBase>(&I)) {
+    if (auto *InlineAsmCall = dyn_cast<InlineAsm>(CallInst->getCalledOperand()->stripPointerCasts())) {
+      StringRef AsmStr = InlineAsmCall->getAsmString();
+      return AsmStr == UNSAFE_MARKER_BEGIN || AsmStr == UNSAFE_MARKER_END;
+    }
+  }
+  return false;
+}
+
+bool UnsafeCountPass::hasUnsafeMetadata(const Instruction &I) {
+  return I.getMetadata("unsafe_inst") != nullptr;
+}
+
 bool UnsafeCountPass::shouldInstrumentFunction(const Function &F) {
   if (F.isDeclaration() || F.isIntrinsic()) return false;
   
@@ -94,12 +108,8 @@ bool UnsafeCountPass::shouldInstrumentFunction(const Function &F) {
 bool UnsafeCountPass::isFunctionUnsafe(const Function &F) {
   for (const BasicBlock &BB : F) {
     for (const Instruction &I : BB) {
-      if (auto *CallInst = dyn_cast<CallBase>(&I)) {
-        if (auto *InlineAsmCall = dyn_cast<InlineAsm>(CallInst->getCalledOperand()->stripPointerCasts())) {
-          if (InlineAsmCall->getAsmString() == UNSAFE_MARKER_BEGIN) {
-            return true;
-          }
-        }
+      if (hasUnsafeMetadata(I)) {
+        return true;
       }
     }
   }
@@ -116,8 +126,8 @@ bool UnsafeCountPass::instrumentUnsafeBlocks(Function &F, const RuntimeContext &
     long unsafeStats[8] = {0}; // total, loads, stores, adds, geps, subs, allocas, others
     
     for (Instruction &I : BB) {
-      // Count all non-debug instructions for block counting
-      if (!isa<DbgInfoIntrinsic>(&I)) {
+      // Count all non-debug, non-marker instructions for block counting
+      if (!isa<DbgInfoIntrinsic>(&I) && !isMarkerInstruction(I)) {
         blockInstCount++;
       }
       

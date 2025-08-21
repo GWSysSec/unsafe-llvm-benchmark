@@ -45,7 +45,11 @@ namespace {
 bool instrumentUnsafeBlocks(Function &F, FunctionCallee StartFn, FunctionCallee EndFn) {
     bool Modified = false;
     LLVMContext &Ctx = F.getContext();
+    
+    // Local vector - safe from concurrency issues since it's per-function
+    std::vector<Instruction *> MarkersToRemove;
 
+    // First pass: instrument and collect markers
     for (BasicBlock &BB : F) {
         Instruction *ActiveMarkerBegin = nullptr;
 
@@ -56,8 +60,11 @@ bool instrumentUnsafeBlocks(Function &F, FunctionCallee StartFn, FunctionCallee 
 
                     if (AsmStr == UNSAFE_MARKER_BEGIN) {
                         ActiveMarkerBegin = &I;
+                        MarkersToRemove.push_back(&I);  // Collect for later removal
                     } else if (AsmStr == UNSAFE_MARKER_END) {
+                        MarkersToRemove.push_back(&I);  // Collect for later removal
                         if (ActiveMarkerBegin) {
+                            // Insert measurement calls
                             IRBuilder<> StartBuilder(ActiveMarkerBegin->getNextNode());
                             Value *StartCycles = StartBuilder.CreateCall(StartFn, {});
 
@@ -72,6 +79,13 @@ bool instrumentUnsafeBlocks(Function &F, FunctionCallee StartFn, FunctionCallee 
             }
         }
     }
+
+    // Second pass: safely remove all collected markers
+    for (Instruction *Marker : MarkersToRemove) {
+        Marker->eraseFromParent();
+        Modified = true;
+    }
+
     return Modified;
 }
 

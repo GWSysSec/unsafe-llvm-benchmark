@@ -51,6 +51,8 @@ private:
   bool instrumentUnsafeBlocks(Function &F, const RuntimeContext &Ctx);
   bool isFunctionUnsafe(const Function &F);
   bool shouldInstrumentFunction(const Function &F);
+  bool isMarkerInstruction(const Instruction &I);
+  bool hasUnsafeMetadata(const Instruction &I);
 };
 
 } // namespace llvm
