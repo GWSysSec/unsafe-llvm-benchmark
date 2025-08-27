@@ -1595,9 +1595,9 @@ PassBuilder::buildPerModuleDefaultPipeline(OptimizationLevel Level,
     MPM.addPass(createModuleToFunctionPassAdaptor(std::move(UnsafeFPM))); 
   }
 
-  //if (EnableDynamicLineCount) {
-  //  MPM.addPass(DynamicLineCountPass());
-  //}
+  if (EnableDynamicLineCount) {
+    MPM.addPass(DynamicLineCountPass());
+  }
 
   if (EnableCpuCycleCount) {
     MPM.addPass(CpuCycleCountPass());
@@ -2074,15 +2074,9 @@ ModulePassManager PassBuilder::buildO0DefaultPipeline(OptimizationLevel Level,
 
   FunctionPassManager FPM;
   // UNSAFE-RUST BEGIN
-  // Run InstMarkerPass - single pass approach
   FunctionPassManager InstFPM;
   InstFPM.addPass(InstMarkerPass());
   MPM.addPass(createModuleToFunctionPassAdaptor(std::move(InstFPM)));
-  
-  // CPU cycle counting for O0 (commented out, uncomment if needed)
-  // if (EnableCpuCycleCount) {
-  //   MPM.addPass(CpuCycleCountPass());
-  // }
   
   if (EnableUnsafeRustDummyPass) {
     FunctionPassManager DummyFPM;
@@ -2180,8 +2174,6 @@ ModulePassManager PassBuilder::buildO0DefaultPipeline(OptimizationLevel Level,
     addRequiredLTOPreLinkPasses(MPM);
 
   // UNSAFE-RUST BEGIN
-  // Post-optimization DynamicLineCount for O0 - placed after minimal optimizations
-  // to capture final line count statistics
   if (EnableDynamicLineCount) {
     MPM.addPass(DynamicLineCountPass());
   }
