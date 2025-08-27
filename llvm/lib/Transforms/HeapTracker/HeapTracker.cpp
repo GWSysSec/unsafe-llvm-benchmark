@@ -24,6 +24,8 @@
 #include "llvm/IR/Type.h"
 #include "llvm/Support/Casting.h"
 #include "llvm/Transforms/InstMarker/InstMarker.h"
+#include <cstdlib>
+#include <cstring>
 
 using namespace llvm;
 
@@ -31,6 +33,14 @@ const char *llvm::DYN_MEM_ACCESS_FN = "dyn_mem_access";
 const char *llvm::DYN_UNSAFE_MEM_ACCESS_FN = "dyn_unsafe_mem_access";
 
 namespace {
+
+/// \brief Checks if the current build is for the primary package.
+///
+/// This uses the CARGO_PRIMARY_PACKAGE environment variable.
+static bool isPrimaryPackage() {
+  const char *P = getenv("CARGO_PRIMARY_PACKAGE");
+  return P && strcmp(P, "1") == 0;
+}
 
 /// \brief Add a call to dyn_mem_access() before each memory instruction.
 /// \param F The target function.
@@ -91,8 +101,15 @@ void instrumentUnsafeMemInst(Function &F, FunctionCallee DynUnsafeMemAccessFn) {
 
 } // anonymous namespace
 
+bool HeapTrackerPass::isPrimaryPackage() {
+  const char *P = getenv("CARGO_PRIMARY_PACKAGE");
+  return P && strcmp(P, "1") == 0;
+}
+
 PreservedAnalyses HeapTrackerPass::run(Function &F,
                                        FunctionAnalysisManager &AM) {
+  if (!HeapTrackerPass::isPrimaryPackage())
+    return PreservedAnalyses::all();
 
   LLVMContext &C = F.getContext();
   Module *M = F.getParent();

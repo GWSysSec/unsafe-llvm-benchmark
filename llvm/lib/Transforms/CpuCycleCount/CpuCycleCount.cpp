@@ -27,6 +27,8 @@
 #include "llvm/Support/Casting.h"
 #include "llvm/Transforms/InstMarker/InstMarker.h"
 #include "llvm/Transforms/Utils/ModuleUtils.h"
+#include <cstdlib>
+#include <cstring>
 
 using namespace llvm;
 
@@ -36,6 +38,14 @@ const char *llvm::CPU_CYCLE_PRINT_STATS_FN = "print_cpu_cycle_stats";
 const char *llvm::TOUCH_TRACKER_FN = "touch_thread_tracker";
 
 namespace {
+
+/// \brief Checks if the current build is for the primary package.
+///
+/// This uses the CARGO_PRIMARY_PACKAGE environment variable.
+static bool isPrimaryPackage() {
+  const char *P = getenv("CARGO_PRIMARY_PACKAGE");
+  return P && strcmp(P, "1") == 0;
+}
 
 /// \brief Instruments unsafe blocks marked by InstMarkerPass to measure CPU cycles.
 /// \param F The target function.
@@ -91,7 +101,15 @@ bool instrumentUnsafeBlocks(Function &F, FunctionCallee StartFn, FunctionCallee 
 
 } // anonymous namespace
 
+bool CpuCycleCountPass::isPrimaryPackage() {
+  const char *P = getenv("CARGO_PRIMARY_PACKAGE");
+  return P && strcmp(P, "1") == 0;
+}
+
 PreservedAnalyses CpuCycleCountPass::run(Module &M, ModuleAnalysisManager &AM) {
+    if (!CpuCycleCountPass::isPrimaryPackage())
+        return PreservedAnalyses::all();
+        
     LLVMContext &Ctx = M.getContext();
     Type *VoidTy = Type::getVoidTy(Ctx);
     Type *Int64Ty = Type::getInt64Ty(Ctx);
