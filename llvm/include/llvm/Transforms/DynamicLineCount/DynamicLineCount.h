@@ -4,13 +4,15 @@
 // See https://llvm.org/LICENSE.txt for license information.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
-//===--------------------------------------------------------------------------------===//
+//===----------------------------------------------------------------------===//
 ///
 /// \file
 /// This file declares the DynamicLineCount pass for tracking unsafe source
-/// line coverage.
+/// line coverage using a two-phase approach:
+/// Phase 1: Registration - collect unique unsafe lines, generate constructor
+/// Phase 2: Execution - insert tracking calls at unsafe instructions
 ///
-//===--------------------------------------------------------------------------------===//
+//===----------------------------------------------------------------------===//
 
 #ifndef LLVM_TRANSFORMS_DYNAMICLINECOUNT_DYNAMICLINECOUNT_H
 #define LLVM_TRANSFORMS_DYNAMICLINECOUNT_DYNAMICLINECOUNT_H
@@ -18,24 +20,21 @@
 #include "llvm/IR/PassManager.h"
 
 namespace llvm {
-class Module;
+class Function;
 }
 
 namespace llvm {
 
-extern const char *REGISTER_UNSAFE_LINE_FN;
-extern const char *EXECUTE_UNSAFE_BLOCK_FN;
-extern const char *DYNAMIC_LINE_PRINT_STATS_FN;
-
-/// \brief Pass that tracks unsafe source line coverage using markers.
+/// \brief FunctionPass that tracks unsafe source line coverage using markers.
 ///
-/// This pass uses marker instructions inserted by InstMarkerPass to identify
-/// unsafe code blocks and the line metadata preserved by InstMarkerPass.
-/// It registers unique source lines per unsafe block and tracks execution
-/// coverage at runtime without relying on debug information in release builds.
+/// This pass uses marker instructions to identify unsafe code regions and tracks
+/// only instructions with !unsafe_inst metadata. Uses a two-phase approach:
+/// Phase 1: Collects unique unsafe lines and generates registration constructor
+/// Phase 2: Inserts execution tracking calls at each unsafe instruction
+/// Relies on marker pairs - no longer needs isPrimaryPackage logic.
 class DynamicLineCountPass : public PassInfoMixin<DynamicLineCountPass> {
 public:
-  PreservedAnalyses run(Module &M, ModuleAnalysisManager &AM);
+  PreservedAnalyses run(Function &F, FunctionAnalysisManager &AM);
 
   static bool isRequired() { return true; }
 };

@@ -1596,7 +1596,9 @@ PassBuilder::buildPerModuleDefaultPipeline(OptimizationLevel Level,
   }
 
   if (EnableDynamicLineCount) {
-    MPM.addPass(DynamicLineCountPass());
+    FunctionPassManager CoverageFPM;
+    CoverageFPM.addPass(DynamicLineCountPass());
+    MPM.addPass(createModuleToFunctionPassAdaptor(std::move(CoverageFPM)));
   }
 
   if (EnableCpuCycleCount) {
@@ -2175,7 +2177,9 @@ ModulePassManager PassBuilder::buildO0DefaultPipeline(OptimizationLevel Level,
 
   // UNSAFE-RUST BEGIN
   if (EnableDynamicLineCount) {
-    MPM.addPass(DynamicLineCountPass());
+    FunctionPassManager CoverageFPM;
+    CoverageFPM.addPass(DynamicLineCountPass());
+    MPM.addPass(createModuleToFunctionPassAdaptor(std::move(CoverageFPM)));
   }
   // UNSAFE-RUST END
 
