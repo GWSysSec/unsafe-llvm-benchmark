@@ -9,8 +9,8 @@
 /// \file
 /// This file implements the DynamicLineCount pass for tracking unsafe
 /// source line coverage using a two-phase approach:
-/// Phase 1: Registration - collect unique unsafe lines, generate constructor
-/// Phase 2: Execution - insert tracking calls at unsafe instructions
+/// Phase 1: Compile-time - Collect all unsafe lines and register via constructor
+/// Phase 2: Runtime - Insert tracking calls at unsafe instructions
 ///
 //===----------------------------------------------------------------------===//
 
@@ -29,12 +29,9 @@
 #include "llvm/IR/Type.h"
 #include "llvm/Support/Casting.h"
 #include "llvm/Transforms/Utils/ModuleUtils.h"
-#include <cstdlib>
-#include <cstring>
-#include <stdexcept>
 #include <string>
 #include <unordered_set>
-#include <functional>
+#include <vector>
 
 using namespace llvm;
 
@@ -43,7 +40,6 @@ const char *TRACK_UNSAFE_LINE_EXECUTION_FN = "track_unsafe_line_execution";
 const char *PRINT_UNSAFE_COVERAGE_STATS_FN = "print_unsafe_coverage_stats";
 
 namespace {
-
 
 /// \brief Setup runtime functions for unsafe line coverage tracking.
 static void setupRuntimeFunctions(Module &M,
@@ -64,29 +60,21 @@ static void setupRuntimeFunctions(Module &M,
   FunctionType *TrackExecutionFnTy = FunctionType::get(VoidTy, {Int32Ty, Int64Ty, Int8PtrTy}, false);
   TrackExecutionFn = M.getOrInsertFunction(TRACK_UNSAFE_LINE_EXECUTION_FN, TrackExecutionFnTy);
 
+  // print_unsafe_coverage_stats()
   FunctionType *PrintFnTy = FunctionType::get(VoidTy, false);
   PrintStatsFn = M.getOrInsertFunction(PRINT_UNSAFE_COVERAGE_STATS_FN, PrintFnTy);
-
-  // Register stats printer once per module
-  static bool DestructorRegistered = false;
-  if (!DestructorRegistered) {
-    if (auto *F = dyn_cast<Function>(PrintStatsFn.getCallee()))
-      appendToGlobalDtors(M, F, 0);
-    DestructorRegistered = true;
-  }
 }
 
 /// \brief Creates a global string constant for the given string value.
-static Value *createGlobalString(IRBuilder<> &Builder, StringRef Str) {
-  Module *M = Builder.GetInsertBlock()->getParent()->getParent();
+static Value *createGlobalString(Module &M, IRBuilder<> &Builder, StringRef Str) {
   return Builder.CreateGlobalStringPtr(Str);
 }
 
 /// \brief Return true if instruction is a marker, and set isBegin/isEnd accordingly.
 static bool isMarkerInstruction(const Instruction &I, bool &isBegin, bool &isEnd) {
   if (const CallBase *CallInst = dyn_cast<CallBase>(&I)) {
-    // Need to strip pointer casts to get to the actual InlineAsm
-    if (const llvm::InlineAsm *InlineAsm = dyn_cast<llvm::InlineAsm>(CallInst->getCalledOperand()->stripPointerCasts())) {
+    if (const llvm::InlineAsm *InlineAsm = 
+        dyn_cast<llvm::InlineAsm>(CallInst->getCalledOperand()->stripPointerCasts())) {
       StringRef AsmStr = InlineAsm->getAsmString();
       if (AsmStr == llvm::UNSAFE_MARKER_BEGIN) { isBegin = true; return true; }
       if (AsmStr == llvm::UNSAFE_MARKER_END)   { isEnd = true; return true; }
@@ -101,33 +89,33 @@ static bool shouldInstrumentFunction(const Function &F) {
   StringRef Name = F.getName();
   return Name != REGISTER_UNSAFE_LINE_FN &&
          Name != TRACK_UNSAFE_LINE_EXECUTION_FN &&
-         Name != PRINT_UNSAFE_COVERAGE_STATS_FN;
+         Name != PRINT_UNSAFE_COVERAGE_STATS_FN &&
+         Name != "unsafe_lines_module_ctor" &&
+         Name != "unsafe_lines_module_dtor";
 }
 
-/// \brief Basic Block registration + execution tracking
-static bool instrumentFunction(Function &F, FunctionCallee RegisterLineFn, FunctionCallee TrackExecutionFn) {
+/// \brief Collect unsafe lines and instrument execution tracking in a function.
+static bool collectAndInstrumentFunction(Function &F, 
+                                        FunctionCallee TrackExecutionFn,
+                                        std::unordered_set<std::string> &allUnsafeLines) {
+  Module &M = *F.getParent();
   LLVMContext &Ctx = F.getContext();
   bool Modified = false;
 
   for (BasicBlock &BB : F) {
-    std::unordered_set<std::string> UnsafeLinesInBB;
-    bool BBHasUnsafeRegion = false;
-    
-    // First pass: collect all unsafe lines in this basic block
     bool insideUnsafeRegion = false;
+    
     for (Instruction &I : BB) {
       bool isBegin = false, isEnd = false;
       
+      // Check for unsafe region markers
       if (isMarkerInstruction(I, isBegin, isEnd)) {
-        if (isBegin) {
-          insideUnsafeRegion = true;
-          BBHasUnsafeRegion = true;
-        } else if (isEnd) {
-          insideUnsafeRegion = false;
-        }
+        if (isBegin) insideUnsafeRegion = true;
+        else if (isEnd) insideUnsafeRegion = false;
         continue;
       }
       
+      // Process unsafe instructions
       if (insideUnsafeRegion && I.getMetadata("unsafe_inst")) {
         if (MDNode *LineInfoMD = I.getMetadata("unsafe_line_info")) {
           if (LineInfoMD->getNumOperands() >= 2) {
@@ -136,81 +124,111 @@ static bool instrumentFunction(Function &F, FunctionCallee RegisterLineFn, Funct
                 unsigned Line = LineConst->getValue()->getUniqueInteger().getZExtValue();
                 std::string File = FileStr->getString().str();
                 std::string LineKey = File + ":" + std::to_string(Line);
-                UnsafeLinesInBB.insert(LineKey);
+                
+                // Add to global collection for compile-time registration
+                allUnsafeLines.insert(LineKey);
+                
+                // Insert runtime execution tracking
+                IRBuilder<> Builder(&I);
+                Value *LineIdArg = ConstantInt::get(Type::getInt32Ty(Ctx), 0);
+                Value *LineArg = ConstantInt::get(Type::getInt64Ty(Ctx), Line);
+                Value *FileArg = createGlobalString(M, Builder, File);
+                Builder.CreateCall(TrackExecutionFn, {LineIdArg, LineArg, FileArg});
+                
+                Modified = true;
               }
             }
           }
         }
       }
-    }
-    
-    // Second pass: instrument the basic block
-    if (BBHasUnsafeRegion && !UnsafeLinesInBB.empty()) {
-      // Register all unsafe lines at BB entry (after PHI nodes)
-      Instruction *FirstNonPHI = &*BB.getFirstNonPHI();
-      IRBuilder<> EntryBuilder(FirstNonPHI);
-      for (const auto &lineKey : UnsafeLinesInBB) {
-        size_t colonPos = lineKey.find(':');
-        std::string file = lineKey.substr(0, colonPos);
-        unsigned line = std::stoul(lineKey.substr(colonPos + 1));
-        
-        Value *LineIdArg = ConstantInt::get(Type::getInt32Ty(Ctx), 0);
-        Value *LineArg = ConstantInt::get(Type::getInt64Ty(Ctx), line);
-        Value *FileArg = createGlobalString(EntryBuilder, file);
-        EntryBuilder.CreateCall(RegisterLineFn, {LineIdArg, LineArg, FileArg});
-      }
-      
-      // Insert execution tracking at each unsafe instruction
-      insideUnsafeRegion = false;
-      for (Instruction &I : BB) {
-        bool isBegin = false, isEnd = false;
-        
-        if (isMarkerInstruction(I, isBegin, isEnd)) {
-          if (isBegin) insideUnsafeRegion = true;
-          else if (isEnd) insideUnsafeRegion = false;
-          continue;
-        }
-        
-        if (insideUnsafeRegion && I.getMetadata("unsafe_inst")) {
-          if (MDNode *LineInfoMD = I.getMetadata("unsafe_line_info")) {
-            if (LineInfoMD->getNumOperands() >= 2) {
-              if (auto *LineConst = dyn_cast<ConstantAsMetadata>(LineInfoMD->getOperand(0))) {
-                if (auto *FileStr = dyn_cast<MDString>(LineInfoMD->getOperand(1))) {
-                  unsigned Line = LineConst->getValue()->getUniqueInteger().getZExtValue();
-                  std::string File = FileStr->getString().str();
-                  
-                  IRBuilder<> Builder(&I);
-                  Value *LineIdArg = ConstantInt::get(Type::getInt32Ty(Ctx), 0);
-                  Value *LineArg = ConstantInt::get(Type::getInt64Ty(Ctx), Line);
-                  Value *FileArg = createGlobalString(Builder, File);
-                  Builder.CreateCall(TrackExecutionFn, {LineIdArg, LineArg, FileArg});
-                }
-              }
-            }
-          }
-        }
-      }
-      
-      Modified = true;
     }
   }
   
   return Modified;
 }
 
+/// \brief Create a module constructor that registers all unsafe lines at startup.
+static void createModuleConstructor(Module &M,
+                                   const std::unordered_set<std::string> &allUnsafeLines,
+                                   FunctionCallee RegisterLineFn) {
+  LLVMContext &Ctx = M.getContext();
+  
+  // Create the constructor function
+  FunctionType *CtorFnTy = FunctionType::get(Type::getVoidTy(Ctx), false);
+  Function *CtorFn = Function::Create(CtorFnTy, GlobalValue::InternalLinkage,
+                                      "unsafe_lines_module_ctor", &M);
+  
+  BasicBlock *BB = BasicBlock::Create(Ctx, "entry", CtorFn);
+  IRBuilder<> Builder(BB);
+  
+  // Register ALL unsafe lines found during compilation
+  int lineId = 0;
+  for (const auto &lineKey : allUnsafeLines) {
+    size_t colonPos = lineKey.find(':');
+    std::string file = lineKey.substr(0, colonPos);
+    unsigned line = std::stoul(lineKey.substr(colonPos + 1));
+    
+    Value *LineIdArg = ConstantInt::get(Type::getInt32Ty(Ctx), lineId++);
+    Value *LineArg = ConstantInt::get(Type::getInt64Ty(Ctx), line);
+    Value *FileArg = createGlobalString(M, Builder, file);
+    Builder.CreateCall(RegisterLineFn, {LineIdArg, LineArg, FileArg});
+  }
+  
+  Builder.CreateRetVoid();
+  
+  // Add to global constructors with priority 0 (runs before main)
+  appendToGlobalCtors(M, CtorFn, 0);
+}
+
+/// \brief Create a module destructor that prints coverage stats at exit.
+static void createModuleDestructor(Module &M, FunctionCallee PrintStatsFn) {
+  LLVMContext &Ctx = M.getContext();
+  
+  // Create the destructor function
+  FunctionType *DtorFnTy = FunctionType::get(Type::getVoidTy(Ctx), false);
+  Function *DtorFn = Function::Create(DtorFnTy, GlobalValue::InternalLinkage,
+                                      "unsafe_lines_module_dtor", &M);
+  
+  BasicBlock *BB = BasicBlock::Create(Ctx, "entry", DtorFn);
+  IRBuilder<> Builder(BB);
+  
+  // Call the print stats function
+  Builder.CreateCall(PrintStatsFn);
+  Builder.CreateRetVoid();
+  
+  // Add to global destructors with priority 0 (runs at exit)
+  appendToGlobalDtors(M, DtorFn, 0);
+}
+
 } // anonymous namespace
 
-PreservedAnalyses DynamicLineCountPass::run(Function &F, FunctionAnalysisManager &AM) {
-  if (!shouldInstrumentFunction(F))
-    return PreservedAnalyses::all();
-
-  Module *M = F.getParent();
-
+PreservedAnalyses DynamicLineCountPass::run(Module &M, ModuleAnalysisManager &AM) {
+  std::unordered_set<std::string> allUnsafeLines;
+  bool Modified = false;
+  
+  // Setup runtime functions
   FunctionCallee RegisterLineFn, TrackExecutionFn, PrintStatsFn;
-  setupRuntimeFunctions(*M, RegisterLineFn, TrackExecutionFn, PrintStatsFn);
-
-  // Basic block registration + execution tracking
-  bool Modified = instrumentFunction(F, RegisterLineFn, TrackExecutionFn);
-
+  setupRuntimeFunctions(M, RegisterLineFn, TrackExecutionFn, PrintStatsFn);
+  
+  // Phase 1: Collect all unsafe lines across ALL functions
+  // and instrument execution tracking
+  for (Function &F : M) {
+    if (shouldInstrumentFunction(F)) {
+      Modified |= collectAndInstrumentFunction(F, TrackExecutionFn, allUnsafeLines);
+    }
+  }
+  
+  // Phase 2: Create module constructor to register all lines at program startup
+  // This ensures all lines are registered BEFORE any execution
+  if (!allUnsafeLines.empty()) {
+    createModuleConstructor(M, allUnsafeLines, RegisterLineFn);
+    Modified = true;
+  }
+  
+  // Phase 3: Create module destructor to print stats at program exit
+  if (Modified) {
+    createModuleDestructor(M, PrintStatsFn);
+  }
+  
   return Modified ? PreservedAnalyses::none() : PreservedAnalyses::all();
 }

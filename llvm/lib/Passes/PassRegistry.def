@@ -141,6 +141,7 @@ MODULE_PASS("verify", VerifierPass())
 MODULE_PASS("view-callgraph", CallGraphViewerPass())
 MODULE_PASS("wholeprogramdevirt", WholeProgramDevirtPass())
 MODULE_PASS("cpu-cycle-count", CpuCycleCountPass())
+MODULE_PASS("dynamic-line-count", DynamicLineCountPass())
 #undef MODULE_PASS
 
 #ifndef MODULE_PASS_WITH_PARAMS
@@ -460,7 +461,6 @@ FUNCTION_PASS("view-post-dom-only", PostDomOnlyViewer())
 FUNCTION_PASS("wasm-eh-prepare", WasmEHPreparePass())
 FUNCTION_PASS("unsafe-rust-dummy", UnsafeRustDummyPass())
 FUNCTION_PASS("unsafe-count", UnsafeCountPass())
-FUNCTION_PASS("dynamic-line-count", DynamicLineCountPass())
 #undef FUNCTION_PASS
 
 #ifndef FUNCTION_PASS_WITH_PARAMS

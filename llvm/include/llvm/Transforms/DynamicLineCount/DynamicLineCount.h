@@ -9,8 +9,8 @@
 /// \file
 /// This file declares the DynamicLineCount pass for tracking unsafe source
 /// line coverage using a two-phase approach:
-/// Phase 1: Registration - collect unique unsafe lines, generate constructor
-/// Phase 2: Execution - insert tracking calls at unsafe instructions
+/// Phase 1: Compile-time - Collect all unsafe lines across the module
+/// Phase 2: Runtime - Track which lines actually execute
 ///
 //===----------------------------------------------------------------------===//
 
@@ -20,21 +20,22 @@
 #include "llvm/IR/PassManager.h"
 
 namespace llvm {
-class Function;
-}
+class Module;
 
-namespace llvm {
-
-/// \brief FunctionPass that tracks unsafe source line coverage using markers.
+/// \brief ModulePass that tracks unsafe source line coverage.
 ///
-/// This pass uses marker instructions to identify unsafe code regions and tracks
-/// only instructions with !unsafe_inst metadata. Uses a two-phase approach:
-/// Phase 1: Collects unique unsafe lines and generates registration constructor
-/// Phase 2: Inserts execution tracking calls at each unsafe instruction
-/// Relies on marker pairs - no longer needs isPrimaryPackage logic.
+/// This pass operates in two phases:
+/// 1. Compile-time: Collects ALL unsafe lines across the entire module
+///    and creates a module constructor to register them at program startup
+/// 2. Runtime: Instruments unsafe instructions to track execution
+///
+/// Using a ModulePass ensures we can:
+/// - See all functions at once to collect complete line information
+/// - Create a module constructor that runs before main()
+/// - Guarantee all lines are registered before any execution tracking
 class DynamicLineCountPass : public PassInfoMixin<DynamicLineCountPass> {
 public:
-  PreservedAnalyses run(Function &F, FunctionAnalysisManager &AM);
+  PreservedAnalyses run(Module &M, ModuleAnalysisManager &AM);
 
   static bool isRequired() { return true; }
 };
