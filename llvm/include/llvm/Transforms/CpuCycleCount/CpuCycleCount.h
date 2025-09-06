@@ -19,14 +19,12 @@
 
 namespace llvm {
 class Module;
-}
 
-namespace llvm {
-
+// Runtime function names
+extern const char *PROGRAM_START_FN;
 extern const char *START_MEASUREMENT_FN;
 extern const char *END_MEASUREMENT_FN;
-extern const char *CPU_CYCLE_PRINT_STATS_FN;
-extern const char *TOUCH_TRACKER_FN;
+extern const char *PRINT_STATS_FN;
 
 /// \brief Pass that tracks CPU cycle count for unsafe instruction execution.
 ///
@@ -39,8 +37,6 @@ public:
   PreservedAnalyses run(Module &M, ModuleAnalysisManager &AM);
   
   static bool isRequired() { return true; }
-  static bool isPrimaryPackage();
-
 };
 
 } // namespace llvm

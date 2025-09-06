@@ -29,8 +29,8 @@
 #include "llvm/IR/Type.h"
 #include "llvm/Support/Casting.h"
 #include "llvm/Transforms/Utils/ModuleUtils.h"
+#include <set>
 #include <string>
-#include <unordered_set>
 #include <vector>
 
 using namespace llvm;
@@ -48,16 +48,15 @@ static void setupRuntimeFunctions(Module &M,
                                   FunctionCallee &PrintStatsFn) {
   LLVMContext &Ctx = M.getContext();
   Type *VoidTy = Type::getVoidTy(Ctx);
-  Type *Int32Ty = Type::getInt32Ty(Ctx);
   Type *Int64Ty = Type::getInt64Ty(Ctx);
   Type *Int8PtrTy = PointerType::getUnqual(Type::getInt8Ty(Ctx));
 
-  // register_unsafe_line(line_id, line, file)
-  FunctionType *RegisterLineFnTy = FunctionType::get(VoidTy, {Int32Ty, Int64Ty, Int8PtrTy}, false);
+  // register_unsafe_line(line, file)
+  FunctionType *RegisterLineFnTy = FunctionType::get(VoidTy, {Int64Ty, Int8PtrTy}, false);
   RegisterLineFn = M.getOrInsertFunction(REGISTER_UNSAFE_LINE_FN, RegisterLineFnTy);
 
-  // track_unsafe_line_execution(line_id, line, file)
-  FunctionType *TrackExecutionFnTy = FunctionType::get(VoidTy, {Int32Ty, Int64Ty, Int8PtrTy}, false);
+  // track_unsafe_line_execution(line, file)
+  FunctionType *TrackExecutionFnTy = FunctionType::get(VoidTy, {Int64Ty, Int8PtrTy}, false);
   TrackExecutionFn = M.getOrInsertFunction(TRACK_UNSAFE_LINE_EXECUTION_FN, TrackExecutionFnTy);
 
   // print_unsafe_coverage_stats()
@@ -97,7 +96,7 @@ static bool shouldInstrumentFunction(const Function &F) {
 /// \brief Collect unsafe lines and instrument execution tracking in a function.
 static bool collectAndInstrumentFunction(Function &F, 
                                         FunctionCallee TrackExecutionFn,
-                                        std::unordered_set<std::string> &allUnsafeLines) {
+                                        std::set<std::string> &allUnsafeLines) {
   Module &M = *F.getParent();
   LLVMContext &Ctx = F.getContext();
   bool Modified = false;
@@ -130,10 +129,9 @@ static bool collectAndInstrumentFunction(Function &F,
                 
                 // Insert runtime execution tracking
                 IRBuilder<> Builder(&I);
-                Value *LineIdArg = ConstantInt::get(Type::getInt32Ty(Ctx), 0);
                 Value *LineArg = ConstantInt::get(Type::getInt64Ty(Ctx), Line);
                 Value *FileArg = createGlobalString(M, Builder, File);
-                Builder.CreateCall(TrackExecutionFn, {LineIdArg, LineArg, FileArg});
+                Builder.CreateCall(TrackExecutionFn, {LineArg, FileArg});
                 
                 Modified = true;
               }
@@ -149,7 +147,7 @@ static bool collectAndInstrumentFunction(Function &F,
 
 /// \brief Create a module constructor that registers all unsafe lines at startup.
 static void createModuleConstructor(Module &M,
-                                   const std::unordered_set<std::string> &allUnsafeLines,
+                                   const std::set<std::string> &allUnsafeLines,
                                    FunctionCallee RegisterLineFn) {
   LLVMContext &Ctx = M.getContext();
   
@@ -162,16 +160,14 @@ static void createModuleConstructor(Module &M,
   IRBuilder<> Builder(BB);
   
   // Register ALL unsafe lines found during compilation
-  int lineId = 0;
   for (const auto &lineKey : allUnsafeLines) {
     size_t colonPos = lineKey.find(':');
     std::string file = lineKey.substr(0, colonPos);
     unsigned line = std::stoul(lineKey.substr(colonPos + 1));
     
-    Value *LineIdArg = ConstantInt::get(Type::getInt32Ty(Ctx), lineId++);
     Value *LineArg = ConstantInt::get(Type::getInt64Ty(Ctx), line);
     Value *FileArg = createGlobalString(M, Builder, file);
-    Builder.CreateCall(RegisterLineFn, {LineIdArg, LineArg, FileArg});
+    Builder.CreateCall(RegisterLineFn, {LineArg, FileArg});
   }
   
   Builder.CreateRetVoid();
@@ -203,7 +199,8 @@ static void createModuleDestructor(Module &M, FunctionCallee PrintStatsFn) {
 } // anonymous namespace
 
 PreservedAnalyses DynamicLineCountPass::run(Module &M, ModuleAnalysisManager &AM) {
-  std::unordered_set<std::string> allUnsafeLines;
+  // Use std::set for deterministic ordering
+  std::set<std::string> allUnsafeLines;
   bool Modified = false;
   
   // Setup runtime functions
