@@ -36,29 +36,15 @@ static bool isPrimaryPackage() {
   return P && strcmp(P, "1") == 0;
 }
 
-// Check if function has unsafe markers
-bool hasUnsafeMarkers(Function &F) {
-    for (BasicBlock &BB : F) {
-        for (Instruction &I : BB) {
-            if (auto *Call = dyn_cast<CallBase>(&I)) {
-                if (auto *IA = dyn_cast<InlineAsm>(Call->getCalledOperand())) {
-                    StringRef Asm = IA->getAsmString();
-                    if (Asm == llvm::UNSAFE_MARKER_BEGIN || Asm == llvm::UNSAFE_MARKER_END) {
-                        return true;
-                    }
-                }
-            }
-        }
-    }
-    return false;
-}
-
 bool instrumentUnsafeBlocks(Function &F, FunctionCallee StartFn, FunctionCallee EndFn) {
     bool Modified = false;
+    std::vector<Instruction*> AllMarkers;
     
+    // Process each basic block independently
     for (BasicBlock &BB : F) {
-        std::vector<Instruction*> ToRemove;
-        Value *ActiveStart = nullptr;
+        // Look for begin/end pairs ONLY within this basic block
+        std::vector<std::pair<Instruction*, Instruction*>> PairsToInstrument;
+        Instruction *CurrentBegin = nullptr;
         
         for (Instruction &I : BB) {
             if (auto *Call = dyn_cast<CallBase>(&I)) {
@@ -66,23 +52,48 @@ bool instrumentUnsafeBlocks(Function &F, FunctionCallee StartFn, FunctionCallee 
                     StringRef Asm = IA->getAsmString();
                     
                     if (Asm == llvm::UNSAFE_MARKER_BEGIN) {
-                        IRBuilder<> Builder(&I);
-                        ActiveStart = Builder.CreateCall(StartFn);
-                        ToRemove.push_back(&I);
-                        Modified = true;
-                    } else if (Asm == llvm::UNSAFE_MARKER_END && ActiveStart) {
-                        IRBuilder<> Builder(&I);
-                        Builder.CreateCall(EndFn, {ActiveStart});
-                        ToRemove.push_back(&I);
-                        ActiveStart = nullptr;
+                        CurrentBegin = &I;
+                        AllMarkers.push_back(&I);
+                    } else if (Asm == llvm::UNSAFE_MARKER_END) {
+                        AllMarkers.push_back(&I);
+                        
+                        // Only create a pair if we have a begin in THE SAME BB
+                        if (CurrentBegin) {
+                            PairsToInstrument.push_back({CurrentBegin, &I});
+                            CurrentBegin = nullptr;  // Reset for next potential pair
+                        }
                     }
                 }
             }
         }
         
-        // Remove markers after instrumentation
-        for (Instruction *I : ToRemove) {
-            I->eraseFromParent();
+        // Instrument the pairs we found in this BB
+        for (const auto &Pair : PairsToInstrument) {
+            IRBuilder<> BeginBuilder(Pair.first);
+            Value *Start = BeginBuilder.CreateCall(StartFn);
+            
+            IRBuilder<> EndBuilder(Pair.second);
+            EndBuilder.CreateCall(EndFn, {Start});
+            
+            Modified = true;
+        }
+    }
+    
+    // Safely remove markers with validation
+    for (Instruction *Marker : AllMarkers) {
+        // Safety checks before removal
+        if (!Marker->use_empty() || Marker->isTerminator() || !Marker->getParent()) {
+            continue;  // Skip problematic markers
+        }
+        
+        // Verify it's still a marker
+        if (auto *Call = dyn_cast<CallBase>(Marker)) {
+            if (auto *IA = dyn_cast<InlineAsm>(Call->getCalledOperand())) {
+                StringRef Asm = IA->getAsmString();
+                if (Asm == llvm::UNSAFE_MARKER_BEGIN || Asm == llvm::UNSAFE_MARKER_END) {
+                    Marker->eraseFromParent();
+                }
+            }
         }
     }
     
@@ -135,14 +146,20 @@ PreservedAnalyses CpuCycleCountPass::run(Module &M, ModuleAnalysisManager &AM) {
     // Add stats printing to destructors
     appendToGlobalDtors(M, cast<Function>(PrintStatsFn.getCallee()), 0);
     
-    // Only instrument functions that have unsafe blocks
+    // Instrument functions
     for (Function &F : M) {
         if (F.isDeclaration()) continue;
         
-        if (hasUnsafeMarkers(F)) {
-            if (instrumentUnsafeBlocks(F, StartMeasureFn, EndMeasureFn)) {
-                Modified = true;
-            }
+        // Skip runtime functions
+        StringRef Name = F.getName();
+        if (Name == PROGRAM_START_FN || Name == START_MEASUREMENT_FN ||
+            Name == END_MEASUREMENT_FN || Name == PRINT_STATS_FN ||
+            Name == "cpu_cycle_ctor") {
+            continue;
+        }
+        
+        if (instrumentUnsafeBlocks(F, StartMeasureFn, EndMeasureFn)) {
+            Modified = true;
         }
     }
 
