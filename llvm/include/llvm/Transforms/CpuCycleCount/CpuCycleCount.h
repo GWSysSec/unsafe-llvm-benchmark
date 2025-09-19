@@ -22,6 +22,7 @@ class Module;
 
 // Runtime function names
 extern const char *PROGRAM_START_FN;
+extern const char *THREAD_START_FN;
 extern const char *START_MEASUREMENT_FN;
 extern const char *END_MEASUREMENT_FN;
 extern const char *PRINT_STATS_FN;
