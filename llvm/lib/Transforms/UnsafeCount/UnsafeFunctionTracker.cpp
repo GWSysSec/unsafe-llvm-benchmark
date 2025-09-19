@@ -57,25 +57,39 @@ static bool shouldInstrumentFunction(const Function &F) {
          !Name.startswith("llvm.");
 }
 
-/// \brief Analyze function for unsafe characteristics
-static std::pair<bool, bool> analyzeFunction(Function &F) {
-  bool hasUnsafeInst = false;
-  bool hasUnsafeRegions = false;
-  
+/// \brief Analyze function for unsafe characteristics according to new criteria
+static bool analyzeFunction(Function &F) {
+  // Scan for regions and metadata inside regions
+  bool inUnsafeRegion = false;
+  bool foundUnsafeInstInRegion = false;
+
   for (BasicBlock &BB : F) {
     for (Instruction &I : BB) {
-      if (!hasUnsafeInst && hasUnsafeMetadata(I))
-        hasUnsafeInst = true;
-      
-      if (!hasUnsafeRegions && isMarkerInstruction(I))
-        hasUnsafeRegions = true;
-      
-      if (hasUnsafeInst && hasUnsafeRegions)
-        return {hasUnsafeInst, hasUnsafeRegions};
+      // Look for region markers
+      if (isMarkerInstruction(I)) {
+        auto *CI = dyn_cast<CallBase>(&I);
+        auto *IA = dyn_cast<InlineAsm>(CI->getCalledOperand()->stripPointerCasts());
+        StringRef AsmStr = IA->getAsmString();
+
+        if (AsmStr == UNSAFE_MARKER_BEGIN)
+          inUnsafeRegion = true;
+        else if (AsmStr == UNSAFE_MARKER_END)
+          inUnsafeRegion = false;
+
+        continue;
+      }
+
+      // Only check for unsafe_inst metadata if inside region
+      if (inUnsafeRegion && hasUnsafeMetadata(I)) {
+        foundUnsafeInstInRegion = true;
+        // No need to continue, one is enough
+        return true;
+      }
     }
   }
-  
-  return {hasUnsafeInst, hasUnsafeRegions};
+
+  // Only true if at least one unsafe_inst is found inside a region
+  return false;
 }
 
 } // anonymous namespace
@@ -102,22 +116,20 @@ PreservedAnalyses UnsafeFunctionTrackerPass::run(Module &M, ModuleAnalysisManage
   for (Function &F : M) {
     if (!shouldInstrumentFunction(F))
       continue;
-    
-    // Assign ID and store as metadata on the function
+
     F.setMetadata(FUNCTION_ID_METADATA, 
                   MDNode::get(Ctx, ConstantAsMetadata::get(
                     ConstantInt::get(Type::getInt32Ty(Ctx), nextId))));
-    
-    // Analyze function characteristics
-    auto [hasUnsafeInst, hasUnsafeRegions] = analyzeFunction(F);
-    
+
+    bool isUnsafe = analyzeFunction(F);
+
     metadata.push_back({
       nextId++,
-      static_cast<uint8_t>(hasUnsafeInst ? 1 : 0),
-      static_cast<uint8_t>(hasUnsafeRegions ? 1 : 0),
+      static_cast<uint8_t>(isUnsafe ? 1 : 0), // Now only track real unsafe functions
+      0, // Optionally drop hasUnsafeRegions, or keep for extra info
       0
     });
-    
+
     functionsToInstrument.push_back(&F);
   }
   
