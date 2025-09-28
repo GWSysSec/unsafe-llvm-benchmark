@@ -13,6 +13,7 @@
 //===--------------------------------------------------------------------------------------==//
 
 #include "llvm/Transforms/CpuCycleCount/CpuCycleCount.h"
+#include "llvm/ADT/SmallVector.h"
 #include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/InlineAsm.h"
 #include "llvm/IR/Module.h"
@@ -20,15 +21,18 @@
 #include "llvm/Transforms/Utils/ModuleUtils.h"
 #include <cstdlib>
 #include <cstring>
-#include <vector>
 
 using namespace llvm;
 
+// Define the names of ALL C functions in our Rust runtime
 const char *llvm::PROGRAM_START_FN = "record_program_start";
 const char *llvm::THREAD_START_FN = "record_thread_start";
 const char *llvm::START_MEASUREMENT_FN = "cpu_cycle_start_measurement";
 const char *llvm::END_MEASUREMENT_FN = "cpu_cycle_end_measurement";
 const char *llvm::PRINT_STATS_FN = "print_cpu_cycle_stats";
+// **New runtime function names for external calls**
+const char *llvm::EXTERNAL_CALL_START_FN = "external_call_start";
+const char *llvm::EXTERNAL_CALL_END_FN = "external_call_end";
 
 namespace {
 
@@ -37,194 +41,129 @@ static bool isPrimaryPackage() {
   return P && strcmp(P, "1") == 0;
 }
 
+// Instruments a single function to measure unsafe blocks, adding memory fences for accuracy.
 bool instrumentUnsafeBlocks(Function &F, FunctionCallee StartFn, FunctionCallee EndFn) {
     bool Modified = false;
-    std::vector<Instruction*> AllMarkers;
-    
-    // Process each basic block independently
+    SmallVector<std::pair<Instruction*, Instruction*>, 16> InstrumentationPairs;
+    SmallVector<Instruction*, 16> MarkersToRemove;
+
+    // First pass: collect all markers and instrumentation points - NO IR modification
     for (BasicBlock &BB : F) {
-        // Look for begin/end pairs ONLY within this basic block
-        std::vector<std::pair<Instruction*, Instruction*>> PairsToInstrument;
-        Instruction *CurrentBegin = nullptr;
-        
+        Instruction* CurrentBeginMarker = nullptr;
+
         for (Instruction &I : BB) {
-            if (auto *Call = dyn_cast<CallBase>(&I)) {
-                if (auto *IA = dyn_cast<InlineAsm>(Call->getCalledOperand())) {
-                    StringRef Asm = IA->getAsmString();
-                    
-                    if (Asm == llvm::UNSAFE_MARKER_BEGIN) {
-                        CurrentBegin = &I;
-                        AllMarkers.push_back(&I);
-                    } else if (Asm == llvm::UNSAFE_MARKER_END) {
-                        AllMarkers.push_back(&I);
-                        
-                        // Only create a pair if we have a begin in THE SAME BB
-                        if (CurrentBegin) {
-                            PairsToInstrument.push_back({CurrentBegin, &I});
-                            CurrentBegin = nullptr;  // Reset for next potential pair
-                        }
-                    }
+            auto *Call = dyn_cast<CallBase>(&I);
+            if (!Call) continue;
+            auto *IA = dyn_cast<InlineAsm>(Call->getCalledOperand());
+            if (!IA) continue;
+
+            StringRef Asm = IA->getAsmString();
+            if (Asm == llvm::UNSAFE_MARKER_BEGIN) {
+                if (!CurrentBeginMarker) {
+                    CurrentBeginMarker = &I;
                 }
-            }
-        }
-        
-        // Instrument the pairs we found in this BB
-        for (const auto &Pair : PairsToInstrument) {
-            IRBuilder<> BeginBuilder(Pair.first);
-            Value *Start = BeginBuilder.CreateCall(StartFn);
-            
-            IRBuilder<> EndBuilder(Pair.second);
-            EndBuilder.CreateCall(EndFn, {Start});
-            
-            Modified = true;
-        }
-    }
-    
-    // Safely remove markers with validation
-    for (Instruction *Marker : AllMarkers) {
-        // Safety checks before removal
-        if (!Marker->use_empty() || Marker->isTerminator() || !Marker->getParent()) {
-            continue;  // Skip problematic markers
-        }
-        
-        // Verify it's still a marker
-        if (auto *Call = dyn_cast<CallBase>(Marker)) {
-            if (auto *IA = dyn_cast<InlineAsm>(Call->getCalledOperand())) {
-                StringRef Asm = IA->getAsmString();
-                if (Asm == llvm::UNSAFE_MARKER_BEGIN || Asm == llvm::UNSAFE_MARKER_END) {
-                    Marker->eraseFromParent();
-                }
+            } else if (Asm == llvm::UNSAFE_MARKER_END && CurrentBeginMarker) {
+                InstrumentationPairs.push_back({CurrentBeginMarker, &I});
+                MarkersToRemove.push_back(CurrentBeginMarker);
+                MarkersToRemove.push_back(&I);
+                CurrentBeginMarker = nullptr;
             }
         }
     }
-    
+
+    // Second pass: apply all instrumentation while markers are still valid
+    for (auto [BeginMarker, EndMarker] : InstrumentationPairs) {
+        IRBuilder<> BeginBuilder(BeginMarker);
+        BeginBuilder.CreateFence(AtomicOrdering::SequentiallyConsistent);
+        Value* StartCycleValue = BeginBuilder.CreateCall(StartFn);
+
+        IRBuilder<> EndBuilder(EndMarker);
+        EndBuilder.CreateFence(AtomicOrdering::SequentiallyConsistent);
+        EndBuilder.CreateCall(EndFn, {StartCycleValue});
+        Modified = true;
+    }
+
+    // Third pass: now safely remove all markers after instrumentation is complete
+    for (Instruction *Marker : MarkersToRemove) {
+        if (Marker->getParent() != nullptr) {
+            if (!Marker->user_empty()) {
+                Value *UndefVal = UndefValue::get(Marker->getType());
+                Marker->replaceAllUsesWith(UndefVal);
+            }
+            Marker->eraseFromParent();
+        }
+    }
     return Modified;
 }
 
-// Instrument thread creation points
-bool instrumentThreadCreation(Module &M, Function &F, FunctionCallee ThreadStartFn) {
-    bool Modified = false;
-    
-    for (BasicBlock &BB : F) {
-        for (Instruction &I : BB) {
-            if (auto *Call = dyn_cast<CallBase>(&I)) {
-                if (!Call->getCalledFunction()) continue;
-                
-                StringRef FnName = Call->getCalledFunction()->getName();
-                
-                // Detect std::thread constructor or pthread_create
-                // Note: std::thread in Rust typically goes through std::sys::unix::thread::Thread::new
-                // which eventually calls pthread_create
-                if (FnName.contains("pthread_create") || 
-                    FnName.contains("_ZNSt6thread") ||  // std::thread C++ mangling
-                    FnName.contains("thread") && FnName.contains("spawn") || // Rust thread::spawn
-                    FnName.contains("std") && FnName.contains("thread") && FnName.contains("Thread")) {
-                    
-                    // For pthread_create: 3rd argument is the thread function
-                    // We need to wrap it
-                    if (FnName.contains("pthread_create") && Call->getNumOperands() >= 4) {
-                        Value *ThreadFn = Call->getOperand(2); // 3rd arg is thread function
-                        
-                        // Create wrapper function that calls record_thread_start first
-                        if (Function *OrigFn = dyn_cast<Function>(ThreadFn->stripPointerCasts())) {
-                            // Create wrapper
-                            FunctionType *WrapperTy = OrigFn->getFunctionType();
-                            Function *Wrapper = Function::Create(
-                                WrapperTy, 
-                                GlobalValue::InternalLinkage,
-                                OrigFn->getName() + "_thread_wrapper", 
-                                &M
-                            );
-                            
-                            BasicBlock *Entry = BasicBlock::Create(M.getContext(), "entry", Wrapper);
-                            IRBuilder<> Builder(Entry);
-                            
-                            // Call record_thread_start at thread entry
-                            Builder.CreateCall(ThreadStartFn);
-                            
-                            // Call original function with all arguments
-                            std::vector<Value*> Args;
-                            for (auto &Arg : Wrapper->args()) {
-                                Args.push_back(&Arg);
-                            }
-                            Value *Result = Builder.CreateCall(OrigFn, Args);
-                            
-                            // Return result
-                            if (WrapperTy->getReturnType()->isVoidTy()) {
-                                Builder.CreateRetVoid();
-                            } else {
-                                Builder.CreateRet(Result);
-                            }
-                            
-                            // Replace thread function with wrapper
-                            Call->setOperand(2, Wrapper);
-                            Modified = true;
-                        }
-                    }
-                    // For Rust thread::spawn, instrument the closure/function being spawned
-                    // This is trickier as it's often inlined or using trait objects
-                    else if (FnName.contains("spawn")) {
-                        // After the spawn call, the new thread should start
-                        // We can't easily intercept the closure, but we can ensure
-                        // the spawned thread will hit record_thread_start on first unsafe block
-                        // This is handled by the runtime fallback
-                    }
-                }
-            }
-        }
-    }
-    
-    return Modified;
-}
-
-// Create module constructor to record program start
+// Sets up a global constructor to call the program start recorder.
 void createProgramStartRecorder(Module &M, FunctionCallee RecordStartFn) {
-    LLVMContext &Ctx = M.getContext();
-    
-    FunctionType *CtorTy = FunctionType::get(Type::getVoidTy(Ctx), false);
-    Function *Ctor = Function::Create(CtorTy, GlobalValue::InternalLinkage,
-                                     "cpu_cycle_ctor", &M);
-    
-    BasicBlock *BB = BasicBlock::Create(Ctx, "entry", Ctor);
+    Function *Ctor = Function::Create(FunctionType::get(Type::getVoidTy(M.getContext()), false),
+                                     GlobalValue::InternalLinkage, "cpu_cycle_ctor", &M);
+    BasicBlock *BB = BasicBlock::Create(M.getContext(), "entry", Ctor);
     IRBuilder<> Builder(BB);
     Builder.CreateCall(RecordStartFn);
     Builder.CreateRetVoid();
-    
-    // Priority 0 ensures this runs before main
     appendToGlobalCtors(M, Ctor, 0);
-}
-
-// For Rust: Instrument common thread entry points
-bool instrumentRustThreadEntry(Module &M, FunctionCallee ThreadStartFn) {
-    bool Modified = false;
-    
-    for (Function &F : M) {
-        if (F.isDeclaration()) continue;
-        
-        StringRef Name = F.getName();
-        
-        // Common Rust thread entry patterns
-        // These are functions that typically start new threads
-        if (Name.contains("thread_start") ||
-            Name.contains("thread_main") ||
-            Name.contains("spawn_unchecked") ||
-            (Name.contains("closure") && Name.contains("thread")) ||
-            Name.startswith("_ZN3std6thread")) {
-            
-            // Insert record_thread_start at function entry
-            BasicBlock &Entry = F.getEntryBlock();
-            Instruction *FirstInst = &*Entry.getFirstInsertionPt();
-            IRBuilder<> Builder(FirstInst);
-            Builder.CreateCall(ThreadStartFn);
-            Modified = true;
-        }
-    }
-    
-    return Modified;
 }
 
 } // namespace
 
+bool instrumentExternalCalls(Function &F, FunctionCallee ExtStartFn, FunctionCallee ExtEndFn) {
+    bool Modified = false;
+    // We need to collect the calls first to avoid iterator invalidation
+    SmallVector<Instruction*, 32> CallsToInstrument;
+
+    for (BasicBlock &BB : F) {
+        for (Instruction &I : BB) {
+            if (auto *Call = dyn_cast<CallBase>(&I)) {
+                Function *CalledFn = Call->getCalledFunction();
+                // Check if the called function is a declaration (external) and not an intrinsic
+                if (CalledFn && CalledFn->isDeclaration() && !CalledFn->isIntrinsic()) {
+                    // Also, don't instrument our own runtime functions!
+                    StringRef Name = CalledFn->getName();
+                    if (!Name.startswith("cpu_cycle_") && !Name.startswith("record_") && !Name.startswith("external_")) {
+                         CallsToInstrument.push_back(&I);
+                    }
+                }
+            }
+        }
+    }
+
+    if (CallsToInstrument.empty()) {
+        return false;
+    }
+
+    for (Instruction *I : CallsToInstrument) {
+        // Skip terminator instructions to avoid IR corruption
+        if (I->isTerminator()) {
+            continue;
+        }
+
+        IRBuilder<> Builder(I);
+        // Insert timer start before the call
+        Builder.CreateFence(AtomicOrdering::SequentiallyConsistent);
+        Value *StartTime = Builder.CreateCall(ExtStartFn);
+
+        // The original call instruction remains here
+
+        // Insert timer end after the call - ONLY if there's a clear next instruction
+        Instruction *NextInst = I->getNextNonDebugInstruction();
+        if (NextInst) {
+            // Safe case: insert before next instruction
+            IRBuilder<> EndBuilder(NextInst);
+            EndBuilder.CreateFence(AtomicOrdering::SequentiallyConsistent);
+            EndBuilder.CreateCall(ExtEndFn, {StartTime});
+        }
+        // Skip instrumentation for calls at end of blocks to avoid IR corruption
+        // This means we'll miss some external calls, but ensures compilation succeeds
+        Modified = true;
+    }
+
+    return Modified;
+}
+
+// The main run method is now clean and performs a single pass over the module.
 PreservedAnalyses CpuCycleCountPass::run(Module &M, ModuleAnalysisManager &AM) {
     if (!isPrimaryPackage())
         return PreservedAnalyses::all();
@@ -233,55 +172,37 @@ PreservedAnalyses CpuCycleCountPass::run(Module &M, ModuleAnalysisManager &AM) {
     Type *VoidTy = Type::getVoidTy(Ctx);
     Type *Int64Ty = Type::getInt64Ty(Ctx);
 
-    // Setup runtime functions
-    FunctionCallee RecordStartFn = M.getOrInsertFunction(
-        PROGRAM_START_FN, FunctionType::get(VoidTy, false));
-    FunctionCallee ThreadStartFn = M.getOrInsertFunction(
-        THREAD_START_FN, FunctionType::get(VoidTy, false));
-    FunctionCallee StartMeasureFn = M.getOrInsertFunction(
-        START_MEASUREMENT_FN, FunctionType::get(Int64Ty, false));
-    FunctionCallee EndMeasureFn = M.getOrInsertFunction(
-        END_MEASUREMENT_FN, FunctionType::get(VoidTy, {Int64Ty}, false));
-    FunctionCallee PrintStatsFn = M.getOrInsertFunction(
-        PRINT_STATS_FN, FunctionType::get(VoidTy, false));
+    // Get declarations for ALL runtime functions
+    FunctionCallee RecordStartFn = M.getOrInsertFunction(PROGRAM_START_FN, VoidTy);
+    FunctionCallee StartMeasureFn = M.getOrInsertFunction(START_MEASUREMENT_FN,
+        FunctionType::get(Int64Ty, {}, false));
+    FunctionCallee EndMeasureFn = M.getOrInsertFunction(END_MEASUREMENT_FN,
+        FunctionType::get(VoidTy, {Int64Ty}, false));
+    FunctionCallee PrintStatsFn = M.getOrInsertFunction(PRINT_STATS_FN, VoidTy);
+    // **Get declarations for the new external call hooks**
+    FunctionCallee ExtStartFn = M.getOrInsertFunction(EXTERNAL_CALL_START_FN,
+        FunctionType::get(Int64Ty, {}, false));
+    FunctionCallee ExtEndFn = M.getOrInsertFunction(EXTERNAL_CALL_END_FN,
+        FunctionType::get(VoidTy, {Int64Ty}, false));
+
+    // Set up module-level hooks
+    createProgramStartRecorder(M, RecordStartFn);
+    if (Function *PrintStatsFunc = dyn_cast<Function>(PrintStatsFn.getCallee())) {
+        appendToGlobalDtors(M, PrintStatsFunc, 0);
+    }
 
     bool Modified = false;
     
-    // Create module constructor to record program start TSC
-    createProgramStartRecorder(M, RecordStartFn);
-    Modified = true;
-    
-    // Add stats printing to destructors
-    appendToGlobalDtors(M, cast<Function>(PrintStatsFn.getCallee()), 0);
-    
-    // First pass: Instrument thread creation points
     for (Function &F : M) {
-        if (F.isDeclaration()) continue;
+        if (F.isDeclaration() || F.getName().startswith("cpu_cycle_")) continue;
         
-        if (instrumentThreadCreation(M, F, ThreadStartFn)) {
+        // Instrument unsafe blocks as before
+        if (instrumentUnsafeBlocks(F, StartMeasureFn, EndMeasureFn)) {
             Modified = true;
         }
-    }
-    
-    // Instrument Rust-specific thread entry points
-    if (instrumentRustThreadEntry(M, ThreadStartFn)) {
-        Modified = true;
-    }
-    
-    // Second pass: Instrument unsafe blocks
-    for (Function &F : M) {
-        if (F.isDeclaration()) continue;
         
-        // Skip runtime functions
-        StringRef Name = F.getName();
-        if (Name == PROGRAM_START_FN || Name == THREAD_START_FN ||
-            Name == START_MEASUREMENT_FN || Name == END_MEASUREMENT_FN || 
-            Name == PRINT_STATS_FN || Name == "cpu_cycle_ctor" ||
-            Name.contains("_thread_wrapper")) {
-            continue;
-        }
-        
-        if (instrumentUnsafeBlocks(F, StartMeasureFn, EndMeasureFn)) {
+        // **Also instrument external calls within this function**
+        if (instrumentExternalCalls(F, ExtStartFn, ExtEndFn)) {
             Modified = true;
         }
     }

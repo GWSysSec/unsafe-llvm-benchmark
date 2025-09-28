@@ -26,13 +26,16 @@ extern const char *THREAD_START_FN;
 extern const char *START_MEASUREMENT_FN;
 extern const char *END_MEASUREMENT_FN;
 extern const char *PRINT_STATS_FN;
+extern const char *EXTERNAL_CALL_START_FN;
+extern const char *EXTERNAL_CALL_END_FN;
 
 /// \brief Pass that tracks CPU cycle count for unsafe instruction execution.
 ///
 /// This pass instruments unsafe code blocks marked by InstMarkerPass to measure
-/// CPU cycles. It inserts calls to runtime functions at the beginning and end
-/// of unsafe blocks, and registers a destructor to print statistics at program
-/// exit.
+/// CPU cycles and also tracks time spent in external library calls. It inserts
+/// calls to runtime functions at the beginning and end of unsafe blocks and
+/// around external function calls, and registers a destructor to print
+/// statistics at program exit.
 class CpuCycleCountPass : public PassInfoMixin<CpuCycleCountPass> {
 public:
   PreservedAnalyses run(Module &M, ModuleAnalysisManager &AM);
