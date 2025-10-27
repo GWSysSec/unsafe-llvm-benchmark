@@ -66,7 +66,7 @@ PreservedAnalyses LineCount::run(Module &M,
                     if (llvm::InlineAsm *IA = llvm::dyn_cast<llvm::InlineAsm>(CI->getCalledOperand())) {
                         //llvm::errs() << "IA passed\n";
                         llvm::StringRef AsmStr = IA->getAsmString();
-                        llvm::errs() << "ASM String: " << AsmStr << "\n";
+                        //llvm::errs() << "ASM String: " << AsmStr << "\n";
                         if (AsmStr == UNSAFE_MARKER_BEGIN) {
                             //llvm::errs() << "unsafe block started\n";
                             unsafe_block_started = true;
