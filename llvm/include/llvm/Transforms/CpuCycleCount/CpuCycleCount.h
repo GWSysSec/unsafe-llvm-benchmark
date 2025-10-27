@@ -1,62 +1,45 @@
-//===-- CpuCycleCount.h - CPU cycle counting for unsafe code ---*- C++ -*-===//
+//===-- CpuCycleCount.h - Track unsafe instruction execution time -*- C++ -*-===//
 //
 // Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
 // See https://llvm.org/LICENSE.txt for license information.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
-//===----------------------------------------------------------------------===//
-//
-// This file defines a module pass that measures CPU cycles consumed by unsafe
-// Rust code blocks. It builds upon InstMarker's marker_begin/marker_end assembly
-// markers to identify unsafe code regions and uses RDTSCP intrinsics for precise
-// cycle counting.
-//
-// The pass works by:
-// 1. Scanning for marker_begin/marker_end inline assembly calls
-// 2. Inserting RDTSCP measurements around these regions
-// 3. Accumulating cycle counts in thread-safe global variables
-// 4. Providing runtime statistics at program exit
-//
-// Metrics tracked:
-// - Total CPU cycles consumed by unsafe code blocks
-// - Number of unsafe blocks executed
-// - Average cycles per unsafe block
-// - Global cycle accumulation across all threads
-//
-//===----------------------------------------------------------------------===//
+//===---------------------------------------------------------------------------------===//
+///
+/// \file
+/// This file declares the CpuCycleCount pass for tracking unsafe instruction
+/// execution time.
+///
+//===---------------------------------------------------------------------------------===//
 
 #ifndef LLVM_TRANSFORMS_CPUCYCLECOUNT_CPUCYCLECOUNT_H
 #define LLVM_TRANSFORMS_CPUCYCLECOUNT_CPUCYCLECOUNT_H
 
 #include "llvm/IR/PassManager.h"
-#include "llvm/IR/Module.h"
-#include "llvm/Transforms/InstMarker/InstMarker.h"
 
 namespace llvm {
+class Module;
 
-// Runtime function name constants for CpuCycleCount
-// These must match the exported symbols in the runtime library
-inline constexpr const char *CPU_CYCLE_START_FN = "cpu_cycle_start_measurement";
-inline constexpr const char *CPU_CYCLE_END_FN = "cpu_cycle_end_measurement";
-inline constexpr const char *CPU_CYCLE_STATS_FN = "print_cpu_cycle_stats";
+// Runtime function names
+extern const char *PROGRAM_START_FN;
+extern const char *THREAD_START_FN;
+extern const char *START_MEASUREMENT_FN;
+extern const char *END_MEASUREMENT_FN;
+extern const char *PRINT_STATS_FN;
+extern const char *EXTERNAL_CALL_START_FN;
+extern const char *EXTERNAL_CALL_END_FN;
 
-/// CpuCycleCountPass - This pass instruments code to measure CPU cycles
-/// consumed by unsafe Rust code blocks identified by InstMarker.
+/// \brief Pass that tracks CPU cycle count for unsafe instruction execution.
 ///
-/// The pass operates at module level to:
-/// 1. Insert cycle measurement calls around marker_begin/marker_end regions
-/// 2. Manage global state for cycle accumulation
-/// 3. Add statistics reporting at program exit
-///
-/// Dependencies:
-/// - InstMarker: Provides marker_begin/marker_end assembly markers
-/// - X86 RDTSCP intrinsic: For precise cycle counting
-/// - Thread-safe runtime: For concurrent access protection
-struct CpuCycleCountPass : PassInfoMixin<CpuCycleCountPass> {
-  /// Main entry point - instruments unsafe code blocks for cycle measurement
+/// This pass instruments unsafe code blocks marked by InstMarkerPass to measure
+/// CPU cycles and also tracks time spent in external library calls. It inserts
+/// calls to runtime functions at the beginning and end of unsafe blocks and
+/// around external function calls, and registers a destructor to print
+/// statistics at program exit.
+class CpuCycleCountPass : public PassInfoMixin<CpuCycleCountPass> {
+public:
   PreservedAnalyses run(Module &M, ModuleAnalysisManager &AM);
   
-  /// This pass is required for unsafe code cycle analysis
   static bool isRequired() { return true; }
 };
 

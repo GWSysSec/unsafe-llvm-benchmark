@@ -39,5 +39,6 @@ add_llvm_component_library(LLVMPasses
   DynamicLineCount
   CpuCycleCount
   HeapTracker
+  UnsafeCount
   # UNSAFE-RUST END
   )
