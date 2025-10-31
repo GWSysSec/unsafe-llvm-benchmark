@@ -295,6 +295,7 @@
 #include "llvm/Transforms/InstMarker/InstMarker.h"
 #include "llvm/Transforms/DynamicLineCount/DynamicLineCount.h"
 #include "llvm/Transforms/CpuCycleCount/CpuCycleCount.h"
+#include "llvm/Transforms/CpuCycleCount/ExternalCallTracker.h"
 #include "llvm/Transforms/HeapTracker/HeapTracker.h"
 #include "llvm/Transforms/UnsafeCount/UnsafeFunctionTracker.h"
 #include "llvm/Transforms/UnsafeCount/UnsafeInstCounter.h"

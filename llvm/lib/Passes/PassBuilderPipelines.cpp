@@ -140,6 +140,7 @@
 #include "llvm/Transforms/InstMarker/InstMarker.h"
 #include "llvm/Transforms/DynamicLineCount/DynamicLineCount.h"
 #include "llvm/Transforms/CpuCycleCount/CpuCycleCount.h"
+#include "llvm/Transforms/CpuCycleCount/ExternalCallTracker.h"
 #include "llvm/Transforms/HeapTracker/HeapTracker.h"
 #include "llvm/Transforms/UnsafeCount/UnsafeFunctionTracker.h"
 #include "llvm/Transforms/UnsafeCount/UnsafeInstCounter.h"
@@ -310,6 +311,11 @@ static cl::opt<bool> EnableHeapTrackerPass(
 static cl::opt<bool> EnableCpuCycleCountPass(
   "enable-cpu-cycle-count", cl::init(false), cl::Hidden,
   cl::desc("Enable the CpuCycleCount pass")
+);
+
+static cl::opt<bool> EnableExternalCallTrackerPass(
+  "enable-external-call-tracker", cl::init(false), cl::Hidden,
+  cl::desc("Enable the ExternalCallTracker pass")
 );
 
 static cl::opt<bool> EnableUnsafeFunctionTrackerPass(
@@ -1615,6 +1621,10 @@ PassBuilder::buildPerModuleDefaultPipeline(OptimizationLevel Level,
   if (EnableCpuCycleCountPass) {
     MPM.addPass(CpuCycleCountPass());
   }
+
+  if (EnableExternalCallTrackerPass) {
+    MPM.addPass(ExternalCallTrackerPass());
+  }
   // UNSAFE-RUST END
 
   if (LTOPreLink)
@@ -2214,6 +2224,10 @@ ModulePassManager PassBuilder::buildO0DefaultPipeline(OptimizationLevel Level,
 
   if (EnableCpuCycleCountPass) {
     MPM.addPass(CpuCycleCountPass());
+  }
+
+  if (EnableExternalCallTrackerPass) {
+    MPM.addPass(ExternalCallTrackerPass());
   }
   // UNSAFE-RUST END
 
