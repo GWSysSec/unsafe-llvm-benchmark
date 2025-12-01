@@ -1556,8 +1556,8 @@ PassBuilder::buildPerModuleDefaultPipeline(OptimizationLevel Level,
   // UNSAFE-RUST BEGIN
   // Always run UnsafeAnalysisPass first as it's required by other passes
   FunctionPassManager UnsafeFPM;
-  UnsafeFPM.addPass(UnsafeAnalysisPass());
-  MPM.addPass(createModuleToFunctionPassAdaptor(std::move(UnsafeFPM)));
+  //UnsafeFPM.addPass(UnsafeAnalysisPass());
+  //MPM.addPass(createModuleToFunctionPassAdaptor(std::move(UnsafeFPM)));
   
   if (Level == OptimizationLevel::O0) {
     // For O0, we want both InstMarker and DynamicLineCount
@@ -1565,10 +1565,6 @@ PassBuilder::buildPerModuleDefaultPipeline(OptimizationLevel Level,
     FunctionPassManager InstFPM;
     InstFPM.addPass(InstMarkerPass());
     MPM.addPass(createModuleToFunctionPassAdaptor(std::move(InstFPM)));
-    
-    FunctionPassManager DLineFPM;
-    DLineFPM.addPass(DynamicLineCountPass());
-    MPM.addPass(createModuleToFunctionPassAdaptor(std::move(DLineFPM)));
 
     // CPU cycle counting for O0 (commented out, uncomment if needed)
     // if (EnableCpuCycleCount) {
@@ -1577,14 +1573,14 @@ PassBuilder::buildPerModuleDefaultPipeline(OptimizationLevel Level,
   } else if (Level == OptimizationLevel::O3) {
     // For O3, run InstMarker when enabled
     if (EnableInstMarkerPass) {
-      llvm::errs() << "InstMarker enabled O3\n";
+      //llvm::errs() << "InstMarker enabled O3\n";
       FunctionPassManager InstFPM;
       InstFPM.addPass(InstMarkerPass());
       MPM.addPass(createModuleToFunctionPassAdaptor(std::move(InstFPM)));
     }
     
     // Run CpuCycleCount when enabled (module-level pass)
-    if (EnableCpuCycleCount) {
+    if (EnableCpuCycleCountPass) {
       MPM.addPass(CpuCycleCountPass());
     }
     
@@ -1659,7 +1655,7 @@ PassBuilder::buildPerModuleDefaultPipeline(OptimizationLevel Level,
     addRequiredLTOPreLinkPasses(MPM);
 
   if (EnableLineCountPass) {
-    llvm::errs() << "InstMarker enabled O3\n";
+    //llvm::errs() << "InstMarker enabled O3\n";
     MPM.addPass(LineCount()); //LineCount after main optimisations
   }
   
