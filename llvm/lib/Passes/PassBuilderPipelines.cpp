@@ -138,6 +138,7 @@
 // UNSAFE-RUST BEGIN
 #include "llvm/Transforms/UnsafeRustDummy/UnsafeRustDummy.h"
 #include "llvm/Transforms/InstMarker/InstMarker.h"
+#include "llvm/Transforms/RuntimeAlias/RuntimeAlias.h"
 #include "llvm/Transforms/DynamicLineCount/DynamicLineCount.h"
 #include "llvm/Transforms/CpuCycleCount/CpuCycleCount.h"
 #include "llvm/Transforms/CpuCycleCount/ExternalCallTracker.h"
@@ -326,6 +327,11 @@ static cl::opt<bool> EnableUnsafeFunctionTrackerPass(
 static cl::opt<bool> EnableUnsafeInstCounterPass(
   "enable-unsafe-inst-counter", cl::init(false), cl::Hidden,
   cl::desc("Enable the UnsafeInstCounter pass")
+);
+
+static cl::opt<bool> EnableRuntimeAlias(
+  "enable-runtime-alias", cl::init(false), cl::Hidden,
+  cl::desc("Enable the RuntimeAlias pass")
 );
   // UNSAFE-RUST END
 
@@ -1559,6 +1565,10 @@ PassBuilder::buildPerModuleDefaultPipeline(OptimizationLevel Level,
     MPM.addPass(createModuleToFunctionPassAdaptor(std::move(InstFPM))); 
   }
 
+  if (EnableRuntimeAlias) {
+      MPM.addPass(RuntimeAliasPass());
+  }
+
   if (EnableUnsafeRustDummyPass) {
     FunctionPassManager DummyFPM;
     DummyFPM.addPass(UnsafeRustDummyPass());
@@ -2101,6 +2111,10 @@ ModulePassManager PassBuilder::buildO0DefaultPipeline(OptimizationLevel Level,
     FunctionPassManager InstFPM;
     InstFPM.addPass(InstMarkerPass());
     MPM.addPass(createModuleToFunctionPassAdaptor(std::move(InstFPM))); 
+  }
+
+  if (EnableRuntimeAlias) {
+      MPM.addPass(RuntimeAliasPass());
   }
 
   if (EnableUnsafeRustDummyPass) {

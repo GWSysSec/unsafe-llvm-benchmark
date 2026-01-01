@@ -38,5 +38,6 @@ add_llvm_component_library(LLVMPasses
   CpuCycleCount
   HeapTracker
   UnsafeCount
+  RuntimeAlias
   # UNSAFE-RUST END
   )

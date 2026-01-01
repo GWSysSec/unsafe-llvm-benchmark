@@ -18,4 +18,5 @@ add_subdirectory(CpuCycleCount)
 add_subdirectory(InstMarker)
 add_subdirectory(HeapTracker)
 add_subdirectory(UnsafeCount)
+add_subdirectory(RuntimeAlias)
 # UNSAFE-RUST END
