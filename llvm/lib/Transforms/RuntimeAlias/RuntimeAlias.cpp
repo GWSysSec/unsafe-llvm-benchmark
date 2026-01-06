@@ -3,6 +3,9 @@
 #include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/Module.h"
 #include "llvm/IR/Instructions.h"
+#include "llvm/IR/Dominators.h"
+#include "llvm/IR/PassManager.h"
+#include "llvm/Analysis/ValueTracking.h"
 #include "llvm/Support/CommandLine.h"
 
 using namespace llvm;
@@ -10,11 +13,12 @@ using namespace llvm;
 static const char *CHECK_ALIAS_FN = "__svf_check_alias";
 
 PreservedAnalyses RuntimeAliasPass::run(Module &M, ModuleAnalysisManager &AM) {
-  // Get or insert the runtime check function: 
-  // void __svf_check_alias(i8* p, i8* q, i32 id)
+  // Get FunctionAnalysisManager to run DominatorTreeAnalysis
+  FunctionAnalysisManager &FAM = AM.getResult<FunctionAnalysisManagerModuleProxy>(M).getManager();
+
   LLVMContext &Ctx = M.getContext();
   Type *VoidTy = Type::getVoidTy(Ctx);
-  PointerType *PtrTy = PointerType::getUnqual(Ctx); // Opaque pointer
+  PointerType *PtrTy = PointerType::getUnqual(Ctx); 
   Type *Int32Ty = Type::getInt32Ty(Ctx);
 
   FunctionCallee CheckFn = M.getOrInsertFunction(
@@ -27,30 +31,74 @@ PreservedAnalyses RuntimeAliasPass::run(Module &M, ModuleAnalysisManager &AM) {
     if (F.isDeclaration() || F.isIntrinsic())
       continue;
 
-    // Collect pointer arguments
-    SmallVector<Value *, 8> PtrArgs;
-    for (Argument &Arg : F.args()) {
-      if (Arg.getType()->isPointerTy()) {
-        PtrArgs.push_back(&Arg);
+    // Candidates: [Instruction*, Value*]
+    // Value* is the pointer operand.
+    SmallVector<std::pair<Instruction*, Value*>, 16> Candidates;
+
+    for (BasicBlock &BB : F) {
+      for (Instruction &I : BB) {
+        // Filter 1: Must have "unsafe_inst" metadata
+        // This metadata is expected to be inserted by the custom rustc or front-end.
+        if (!I.getMetadata("unsafe_inst"))
+          continue;
+
+        Value *PtrOp = nullptr;
+        if (LoadInst *LI = dyn_cast<LoadInst>(&I)) {
+          PtrOp = LI->getPointerOperand();
+        } else if (StoreInst *SI = dyn_cast<StoreInst>(&I)) {
+          PtrOp = SI->getPointerOperand();
+        } else {
+          continue;
+        }
+
+        // Filter 2: Ignore Stack Allocations (match SVF Heap-Only focus)
+        // getUnderlyingObject digs through GEPs/bitcasts to find the base.
+        // If the base is an AllocaInst, it is strictly stack memory.
+        if (isa<AllocaInst>(getUnderlyingObject(PtrOp))) {
+            continue;
+        }
+
+        Candidates.push_back({&I, PtrOp});
       }
     }
 
-    if (PtrArgs.size() < 2)
+    if (Candidates.size() < 2)
       continue;
 
-    // Inject checks at the entry block
-    IRBuilder<> Builder(&*F.getEntryBlock().getFirstInsertionPt());
+    // Get DominatorTree for this function
+    DominatorTree &DT = FAM.getResult<DominatorTreeAnalysis>(F);
 
-    // Pairwise check of pointer arguments
-    // For now, check all pairs (n*(n-1)/2)
-    for (size_t i = 0; i < PtrArgs.size(); ++i) {
-      for (size_t j = i + 1; j < PtrArgs.size(); ++j) {
-        Value *P = PtrArgs[i];
-        Value *Q = PtrArgs[j];
+    // Pairwise Check
+    for (size_t i = 0; i < Candidates.size(); ++i) {
+      for (size_t j = i + 1; j < Candidates.size(); ++j) {
+        Instruction *InstA = Candidates[i].first;
+        Value *PtrA = Candidates[i].second;
+
+        Instruction *InstB = Candidates[j].first;
+        Value *PtrB = Candidates[j].second;
+
+        Instruction *InsertPt = nullptr;
+
+        // Logic: To check Alias(PtrA, PtrB), both pointers must be available.
+        // Using Dominance to determine a safe insertion point.
+        // If InstA dominates InstB, execution passes A then B. 
+        // We can check at B (PtrA is alive/available due to dominance).
+        // Conversely for B dominating A.
+        // If neither dominates, they are likely in parallel branches or disjoint paths,
+        // so we skip checking them (conservative approach for runtime instrumentation).
         
-        // __svf_check_alias(p, q, id++)
-        Builder.CreateCall(CheckFn, {P, Q, ConstantInt::get(Int32Ty, CheckID++)});
-        Modified = true;
+        if (DT.dominates(InstA, InstB)) {
+             InsertPt = InstB;
+        } else if (DT.dominates(InstB, InstA)) {
+             InsertPt = InstA;
+        }
+        
+        if (InsertPt) {
+            IRBuilder<> Builder(InsertPt);
+            // __svf_check_alias(p, q, id++)
+            Builder.CreateCall(CheckFn, {PtrA, PtrB, ConstantInt::get(Int32Ty, CheckID++)});
+            Modified = true;
+        }
       }
     }
   }
