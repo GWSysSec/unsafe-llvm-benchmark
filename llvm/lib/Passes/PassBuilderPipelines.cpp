@@ -145,6 +145,7 @@
 #include "llvm/Transforms/HeapTracker/HeapTracker.h"
 #include "llvm/Transforms/UnsafeCount/UnsafeFunctionTracker.h"
 #include "llvm/Transforms/UnsafeCount/UnsafeInstCounter.h"
+#include "llvm/Transforms/SVFAnalysis/UnsafeHeapAllocAnalysis.h"
 // UNSAFE-RUST END
 
 using namespace llvm;
@@ -332,6 +333,11 @@ static cl::opt<bool> EnableUnsafeInstCounterPass(
 static cl::opt<bool> EnableRuntimeAlias(
   "enable-runtime-alias", cl::init(false), cl::Hidden,
   cl::desc("Enable the RuntimeAlias pass")
+);
+
+static cl::opt<bool> EnableUnsafeHeapAllocAnalysis(
+  "enable-unsafe-heap-alloc-analysis", cl::init(false), cl::Hidden,
+  cl::desc("Enable the UnsafeHeapAllocAnalysis pass")
 );
   // UNSAFE-RUST END
 
@@ -1567,6 +1573,10 @@ PassBuilder::buildPerModuleDefaultPipeline(OptimizationLevel Level,
 
   if (EnableRuntimeAlias) {
       MPM.addPass(RuntimeAliasPass());
+  }
+
+  if (EnableUnsafeHeapAllocAnalysis) {
+      MPM.addPass(UnsafeHeapAllocAnalysis());
   }
 
   if (EnableUnsafeRustDummyPass) {

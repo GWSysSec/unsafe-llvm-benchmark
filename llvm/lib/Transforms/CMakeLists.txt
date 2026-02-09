@@ -19,4 +19,5 @@ add_subdirectory(InstMarker)
 add_subdirectory(HeapTracker)
 add_subdirectory(UnsafeCount)
 add_subdirectory(RuntimeAlias)
+add_subdirectory(SVFAnalysis)
 # UNSAFE-RUST END

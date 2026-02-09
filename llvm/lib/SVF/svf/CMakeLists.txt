@@ -2,7 +2,7 @@
 file(GLOB_RECURSE SVF_CORE_SOURCES ${CMAKE_CURRENT_LIST_DIR}/lib/*.cpp)
 
 # Use add_llvm_library to integrate typical build flags
-add_llvm_library(SvfCore
+add_llvm_component_library(LLVMSvfCore
     ${SVF_CORE_SOURCES}
     
     LINK_LIBS

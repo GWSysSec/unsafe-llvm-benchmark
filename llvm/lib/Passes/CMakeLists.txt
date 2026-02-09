@@ -39,5 +39,6 @@ add_llvm_component_library(LLVMPasses
   HeapTracker
   UnsafeCount
   RuntimeAlias
+  SVFAnalysis
   # UNSAFE-RUST END
   )

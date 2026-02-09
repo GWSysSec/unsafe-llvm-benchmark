@@ -18,14 +18,14 @@ add_custom_target(gen_extapi_ir ALL DEPENDS ${SVF_BUILD_EXTAPI_BC})
 file(GLOB_RECURSE SVF_LLVM_SOURCES ${CMAKE_CURRENT_LIST_DIR}/lib/*.cpp)
 
 # Map generic components to LLVM libraries
-add_llvm_library(SvfLLVM
+add_llvm_component_library(LLVMSvfLLVM
     ${SVF_LLVM_SOURCES}
 
     DEPENDS
     gen_extapi_ir
     
     LINK_LIBS
-    SvfCore
+    LLVMSvfCore
     ${Z3_LIBRARIES}
 
     LINK_COMPONENTS

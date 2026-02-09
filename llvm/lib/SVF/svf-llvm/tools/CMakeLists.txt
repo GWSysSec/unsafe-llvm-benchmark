@@ -20,7 +20,7 @@ set(ALL_TOOLS
 
 foreach(_tool IN LISTS ALL_TOOLS)
   # Link the SvfLLVM library against SVF's core & LLVM libraries
-  target_link_libraries(${_tool} PRIVATE SvfCore SvfLLVM)
+  target_link_libraries(${_tool} PRIVATE LLVMSvfCore LLVMSvfLLVM)
 
   # Ensure that the build artifacts are placed into lib/bin/include relative to the top of the build directory
   set_target_properties(
