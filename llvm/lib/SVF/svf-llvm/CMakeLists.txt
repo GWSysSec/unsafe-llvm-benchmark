@@ -15,6 +15,8 @@ add_custom_command(
 
 add_custom_target(gen_extapi_ir ALL DEPENDS ${SVF_BUILD_EXTAPI_BC})
 
+install(FILES ${SVF_BUILD_EXTAPI_BC} DESTINATION lib)
+
 file(GLOB_RECURSE SVF_LLVM_SOURCES ${CMAKE_CURRENT_LIST_DIR}/lib/*.cpp)
 
 # Map generic components to LLVM libraries
