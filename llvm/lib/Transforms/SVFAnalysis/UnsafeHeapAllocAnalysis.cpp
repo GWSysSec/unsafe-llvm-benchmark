@@ -5,6 +5,7 @@
 #include "llvm/Support/raw_ostream.h"
 
 // SVF Includes
+#include "SVFIR/SVFVariables.h"
 #include "SVF-LLVM/LLVMModule.h"
 #include "SVF-LLVM/SVFIRBuilder.h"
 #include "WPA/Andersen.h"
@@ -63,15 +64,30 @@ PreservedAnalyses UnsafeHeapAllocAnalysis::run(Module &M, ModuleAnalysisManager 
                   errs() << "  Instruction: " << I << "\n";
                   
                   for (NodeID target : pts) {
-                      const SVFVar* targetNode = pag->getGNode(target);
-                      errs() << "  Points to (SVF Node " << target << "): " << targetNode->toString() << "\n";
+                      const BaseObjVar* targetNode = pag->getBaseObject(target);
                       
-                      // Attempt to map back to LLVM Value to identify allocation site
-                      // Note: Not all SVFVars map to LLVM Values (e.g., blackhole, null)
+                      std::string typeStr = "[Unknown]";
+                      if(targetNode) {
+                          if (targetNode->isHeap()) typeStr = "[Heap]";
+                          else if (targetNode->isStack()) typeStr = "[Stack]";
+                          else if (targetNode->isStaticObj() || targetNode->isGlobalObj()) typeStr = "[Static]";
+                      }
+
+                      errs() << "  Points to " << typeStr << " (SVF Node " << target << "): " << targetNode->toString() << "\n";
+                      
+                      std::string allocSiteStr = "";
                       if (llvmModuleSet->hasLLVMValue(targetNode)) {
                           const Value* V = llvmModuleSet->getLLVMValue(targetNode);
+                          allocSiteStr = V->getName().str();
                           errs() << "    Allocation Site: " << *V << "\n";
                       }
+                      
+                      // JSON Output
+                      errs() << "JSON_REPORT: {\"instruction\": \"" << I.getOpcodeName() << "\", " 
+                             << "\"pointer_node\": " << pNodeId << ", "
+                             << "\"target_node\": " << target << ", "
+                             << "\"memory_type\": \"" << typeStr << "\", "
+                             << "\"allocation_site\": \"" << allocSiteStr << "\"}\n";
                   }
               }
           }
