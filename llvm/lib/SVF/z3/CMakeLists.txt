@@ -1,5 +1,5 @@
 # Enforce some CMake policies
-cmake_minimum_required(VERSION 3.4)
+cmake_minimum_required(VERSION 3.5)
 
 if (POLICY CMP0054)
   cmake_policy(SET CMP0054 NEW)

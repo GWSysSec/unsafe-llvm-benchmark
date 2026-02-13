@@ -25,7 +25,7 @@ if (EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/z3/CMakeLists.txt")
     
     # Set variables for SVF linking
     set(Z3_LIBRARIES libz3)
-    set(Z3_INCLUDE_DIRS "${CMAKE_CURRENT_SOURCE_DIR}/z3/src/api" "${CMAKE_CURRENT_BINARY_DIR}/z3/src/api")
+    set(Z3_INCLUDE_DIRS "${CMAKE_CURRENT_SOURCE_DIR}/z3/src/api" "${CMAKE_CURRENT_BINARY_DIR}/z3/src/api" "${CMAKE_CURRENT_SOURCE_DIR}/z3/src/api/c++")
     
     # Ensure Z3 includes are propagated
     include_directories(${Z3_INCLUDE_DIRS})

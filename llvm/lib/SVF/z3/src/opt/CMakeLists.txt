@@ -1,4 +1,4 @@
-z3_add_component(opt
+z3_add_component(z3opt
   SOURCES
     maxlex.cpp
     maxres.cpp

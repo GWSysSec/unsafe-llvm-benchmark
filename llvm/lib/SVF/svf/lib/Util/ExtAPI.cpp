@@ -194,14 +194,39 @@ std::string ExtAPI::getExtBcPath()
     if (!soPath.empty())
     {
         std::string dir = soPath.substr(0, soPath.find_last_of('/'));
-        std::string candidate = dir + "/extapi.bc";
-        if (setExtBcPath(candidate))
+        
+        // Check in the same directory as the SO
+        std::string candidate1 = dir + "/extapi.bc";
+        if (setExtBcPath(candidate1))
         {
             return extBcPath;
         }
         else
         {
-            candidatePaths.push_back(candidate);
+            candidatePaths.push_back(candidate1);
+        }
+
+        // Check in ../lib/extapi.bc (relative to bin or lib/rustlib/...)
+        // Use a loop to walk up directories if needed, but for now try simple relative structure
+        std::string candidate2 = dir + "/../lib/extapi.bc";
+        if (setExtBcPath(candidate2))
+        {
+             return extBcPath;
+        }
+        else
+        {
+             candidatePaths.push_back(candidate2);
+        }
+
+        // Check in ../../llvm/lib/extapi.bc (for x.py build structure where rustc is in stage1/bin and llvm in llvm/lib)
+        std::string candidate3 = dir + "/../../llvm/lib/extapi.bc";
+        if (setExtBcPath(candidate3))
+        {
+             return extBcPath;
+        }
+        else
+        {
+             candidatePaths.push_back(candidate3);
         }
     }
 

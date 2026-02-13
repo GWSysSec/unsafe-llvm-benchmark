@@ -63,17 +63,15 @@ PreservedAnalyses UnsafeHeapAllocAnalysis::run(Module &M, ModuleAnalysisManager 
                   errs() << "  Instruction: " << I << "\n";
                   
                   for (NodeID target : pts) {
-                      PAGNode* targetNode = pag->getGNode(target);
+                      const SVFVar* targetNode = pag->getGNode(target);
                       errs() << "  Points to (SVF Node " << target << "): " << targetNode->toString() << "\n";
                       
                       // Attempt to map back to LLVM Value to identify allocation site
-                      // Note: Not all PAGNodes map to LLVM Values (e.g., blackhole, null)
-                      /*
-                      if (llvmModuleSet->hasLLVMValue(targetNode->getValue())) {
-                          const Value* V = llvmModuleSet->getLLVMValue(targetNode->getValue());
+                      // Note: Not all SVFVars map to LLVM Values (e.g., blackhole, null)
+                      if (llvmModuleSet->hasLLVMValue(targetNode)) {
+                          const Value* V = llvmModuleSet->getLLVMValue(targetNode);
                           errs() << "    Allocation Site: " << *V << "\n";
                       }
-                      */
                   }
               }
           }
