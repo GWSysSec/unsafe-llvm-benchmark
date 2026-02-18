@@ -13,91 +13,96 @@
 using namespace llvm;
 using namespace SVF;
 
-PreservedAnalyses UnsafeHeapAllocAnalysis::run(Module &M, ModuleAnalysisManager &AM) {
-  errs() << "[UnsafeHeapAllocAnalysis] DEBUG: Pass started for " << M.getName() << "\n";
+AnalysisKey UnsafeHeapAllocAnalysis::Key;
 
-  // 0. Check Environment Variable to ensure we only analyze the primary crate
-  // This avoids analyzing dependencies when running via cargo
+UnsafeHeapAllocAnalysis::Result UnsafeHeapAllocAnalysis::run(Module &M, ModuleAnalysisManager &AM) {
+  Result Res;
+  
+  // 0. Check Environment Variable
   const char *EnvPackage = std::getenv("CARGO_PRIMARY_PACKAGE");
   if (!EnvPackage || std::strcmp(EnvPackage, "1") != 0) {
-    return PreservedAnalyses::all();
+    return Res;
   }
 
-  errs() << "[UnsafeHeapAllocAnalysis] Running on " << M.getName() << "\n";
+  errs() << "[UnsafeHeapAllocAnalysis] Running Analysis on " << M.getName() << "\n";
 
-  // 1. Build SVF Module from the LLVM Module
+  // 1. Build SVF Module
   LLVMModuleSet* llvmModuleSet = LLVMModuleSet::getLLVMModuleSet();
   llvmModuleSet->buildSVFModule(M);
 
-  // 2. Build SVFIR (Program Assignment Graph)
+  // 2. Build SVFIR (PAG)
   SVFIRBuilder builder;
   SVFIR* pag = builder.build();
 
-  // 3. Run Andersen's Pointer Analysis (WaveDiff implementation is the standard)
+  // 3. Run Andersen
   Andersen* ander = AndersenWaveDiff::createAndersenWaveDiff(pag);
-  
-  // 4. Iterate over instructions to find unsafe pointers
+
+  // 4. Populate HeapAllocSizes
+  // Iterate over all nodes in PAG to find Heap Objects
+  for (auto it = pag->begin(); it != pag->end(); ++it) {
+      NodeID id = it->first;
+      if (pag->getBaseObject(id)) { // Check if it is a base object
+          const BaseObjVar* node = pag->getBaseObject(id);
+          if (node->isHeap()) {
+              // Get size if possible. isHeap() usually means malloc/new.
+              // SVF might have size info. 
+              // BaseObjVar has getSize() but it might be symbolic or constant.
+              // For now, we store 0 if unknown, but runtime alloc hook usually gets size from arguments.
+              Res.HeapAllocSizes[id] = 0; 
+
+              // Populate AllocationSites
+              if (llvmModuleSet->hasLLVMValue(node)) {
+                  const Value* V = llvmModuleSet->getLLVMValue(node);
+                  Res.AllocationSites[V] = id;
+              }
+          }
+      }
+  }
+
+  // 5. Populate UnsafePtrs (Instructions that point to Heap)
   for (Function &F : M) {
       if (F.isDeclaration()) continue;
       for (BasicBlock &BB : F) {
           for (Instruction &I : BB) {
-              // Check for "unsafe_inst" metadata
-              if (!I.getMetadata("unsafe_inst")) continue;
-
               Value *Ptr = nullptr;
               if (LoadInst *LI = dyn_cast<LoadInst>(&I)) {
                   Ptr = LI->getPointerOperand();
               } else if (StoreInst *SI = dyn_cast<StoreInst>(&I)) {
                   Ptr = SI->getPointerOperand();
+              } else if (GetElementPtrInst *GEP = dyn_cast<GetElementPtrInst>(&I)) {
+                   // GEPs calculate addresses, but don't access memory directly.
+                   // Usually checks are done on Load/Store.
+              } else if (CallBase *CB = dyn_cast<CallBase>(&I)) {
+                   // Calls might access memory, but handling them is harder (alias of args).
+                   // For V1, focus on Load/Store.
               }
 
               if (Ptr) {
-                  // Get the SVF Node ID for the pointer
-                  if (!llvmModuleSet->hasValueNode(Ptr)) continue;
-                  
-                  NodeID pNodeId = llvmModuleSet->getValueNode(Ptr);
-                  const PointsTo &pts = ander->getPts(pNodeId);
-                  
-                  if (pts.empty()) continue;
-
-                  errs() << "[UnsafeHeapAllocAnalysis] Unsafe pointer usage detected:\n";
-                  errs() << "  Instruction: " << I << "\n";
-                  
-                  for (NodeID target : pts) {
-                      const BaseObjVar* targetNode = pag->getBaseObject(target);
+                  if (llvmModuleSet->hasValueNode(Ptr)) {
+                      NodeID pNodeId = llvmModuleSet->getValueNode(Ptr);
+                      const PointsTo &pts = ander->getPts(pNodeId);
                       
-                      std::string typeStr = "[Unknown]";
-                      if(targetNode) {
-                          if (targetNode->isHeap()) typeStr = "[Heap]";
-                          else if (targetNode->isStack()) typeStr = "[Stack]";
-                          else if (targetNode->isStaticObj() || targetNode->isGlobalObj()) typeStr = "[Static]";
+                      std::vector<NodeID> heapTargets;
+                      for (NodeID target : pts) {
+                          const BaseObjVar* targetNode = pag->getBaseObject(target);
+                          if (targetNode && targetNode->isHeap()) {
+                              heapTargets.push_back(target);
+                          }
                       }
 
-                      errs() << "  Points to " << typeStr << " (SVF Node " << target << "): " << targetNode->toString() << "\n";
-                      
-                      std::string allocSiteStr = "";
-                      if (llvmModuleSet->hasLLVMValue(targetNode)) {
-                          const Value* V = llvmModuleSet->getLLVMValue(targetNode);
-                          allocSiteStr = V->getName().str();
-                          errs() << "    Allocation Site: " << *V << "\n";
+                      if (!heapTargets.empty()) {
+                          Res.UnsafePtrs[&I] = std::move(heapTargets);
                       }
-                      
-                      // JSON Output
-                      errs() << "JSON_REPORT: {\"instruction\": \"" << I.getOpcodeName() << "\", " 
-                             << "\"pointer_node\": " << pNodeId << ", "
-                             << "\"target_node\": " << target << ", "
-                             << "\"memory_type\": \"" << typeStr << "\", "
-                             << "\"allocation_site\": \"" << allocSiteStr << "\"}\n";
                   }
               }
           }
       }
   }
 
-  // 5. Cleanup SVF resources
+  // 6. Cleanup
   AndersenWaveDiff::releaseAndersenWaveDiff();
   SVFIR::releaseSVFIR();
   LLVMModuleSet::releaseLLVMModuleSet();
 
-  return PreservedAnalyses::all();
+  return Res;
 }

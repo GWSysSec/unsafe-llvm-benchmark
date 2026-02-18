@@ -146,6 +146,7 @@
 #include "llvm/Transforms/UnsafeCount/UnsafeFunctionTracker.h"
 #include "llvm/Transforms/UnsafeCount/UnsafeInstCounter.h"
 #include "llvm/Transforms/SVFAnalysis/UnsafeHeapAllocAnalysis.h"
+#include "llvm/Transforms/SVFAnalysis/UnsafeHeapInstrumentation.h"
 // UNSAFE-RUST END
 
 using namespace llvm;
@@ -1374,6 +1375,10 @@ PassBuilder::buildModuleOptimizationPipeline(OptimizationLevel Level,
 
   // Run partial inlining pass to partially inline functions that have
   // large bodies.
+  if (EnableUnsafeHeapAllocAnalysis) {
+      MPM.addPass(UnsafeHeapInstrumentation());
+  }
+
   if (RunPartialInlining)
     MPM.addPass(PartialInlinerPass());
 
@@ -1576,7 +1581,7 @@ PassBuilder::buildPerModuleDefaultPipeline(OptimizationLevel Level,
   }
 
   if (EnableUnsafeHeapAllocAnalysis) {
-      MPM.addPass(UnsafeHeapAllocAnalysis());
+      MPM.addPass(UnsafeHeapInstrumentation());
   }
 
   if (EnableUnsafeRustDummyPass) {
@@ -2125,6 +2130,10 @@ ModulePassManager PassBuilder::buildO0DefaultPipeline(OptimizationLevel Level,
 
   if (EnableRuntimeAlias) {
       MPM.addPass(RuntimeAliasPass());
+  }
+
+  if (EnableUnsafeHeapAllocAnalysis) {
+      MPM.addPass(UnsafeHeapInstrumentation());
   }
 
   if (EnableUnsafeRustDummyPass) {

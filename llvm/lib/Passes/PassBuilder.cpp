@@ -301,6 +301,7 @@
 #include "llvm/Transforms/UnsafeCount/UnsafeFunctionTracker.h"
 #include "llvm/Transforms/UnsafeCount/UnsafeInstCounter.h"
 #include "llvm/Transforms/SVFAnalysis/UnsafeHeapAllocAnalysis.h"
+#include "llvm/Transforms/SVFAnalysis/UnsafeHeapInstrumentation.h"
 // UNSAFE-RUST END
 
 using namespace llvm;
