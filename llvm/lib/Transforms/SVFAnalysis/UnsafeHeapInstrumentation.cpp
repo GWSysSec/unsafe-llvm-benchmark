@@ -4,6 +4,9 @@
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/Instructions.h"
+#include "llvm/Support/Debug.h"
+
+#define DEBUG_TYPE "unsafe-heap-alloc"
 #include "llvm/IR/InlineAsm.h"
 #include "llvm/IR/Intrinsics.h"
 #include "llvm/Transforms/InstMarker/InstMarker.h" 
@@ -71,13 +74,13 @@ PreservedAnalyses UnsafeHeapInstrumentation::run(Module &M, ModuleAnalysisManage
              // Check Strict Dominance and PostDominance
              if (DT->dominates(Begin, End) && PDT->dominates(End, Begin)) {
                  ValidRegions.push_back({Begin, End});
-                 errs() << "SVF: Valid SESE Region found in " << F.getName() << "\n";
+                 LLVM_DEBUG(dbgs() << "SVF: Valid SESE Region found in " << F.getName() << "\n");
                  Matched = true;
                  break; 
              }
         }
         if (!Matched) {
-             errs() << "SVF: Invalid SESE Region or Unmatched Marker in " << F.getName() << "\n";
+             LLVM_DEBUG(dbgs() << "SVF: Invalid SESE Region or Unmatched Marker in " << F.getName() << "\n");
         }
     }
 
@@ -93,13 +96,15 @@ PreservedAnalyses UnsafeHeapInstrumentation::run(Module &M, ModuleAnalysisManage
              AllocInsts.push_back({&I, AnalysisRes.AllocationSites[&I]});
           }
 
-          // Identify Unsafe Accesses
+              // Identify Unsafe Accesses
           if (AnalysisRes.UnsafePtrs.count(&I)) {
              // Check membership in Valid Regions
              for (const auto &R : ValidRegions) {
-                 if (DT->dominates(R.Begin, &I) && PDT->dominates(R.End, &I)) {
+                 if (DT->dominates(R.Begin->getParent(), I.getParent()) && PDT->dominates(R.End->getParent(), I.getParent())) {
                      // Inside Region
-                     AccessInsts.push_back({&I, AnalysisRes.UnsafePtrs[&I][0]}); // Pick first target
+                     for (NodeID targetId : AnalysisRes.UnsafePtrs[&I]) {
+                         AccessInsts.push_back({&I, targetId});
+                     }
                      break;
                  }
              }
@@ -112,7 +117,7 @@ PreservedAnalyses UnsafeHeapInstrumentation::run(Module &M, ModuleAnalysisManage
           NodeID id = Pair.second;
           uint64_t size = AnalysisRes.HeapAllocSizes[id];
 
-          IRBuilder<> B(I->getNextNode()); // Insert AFTER
+          IRBuilder<> B(I->getParent(), std::next(I->getIterator())); // Insert AFTER
           Value *Ptr = I;
           if (Ptr->getType()->isPointerTy()) { // Ensure it is pointer
                Value *VoidPtr = B.CreateBitCast(Ptr, PtrTy);
@@ -121,7 +126,21 @@ PreservedAnalyses UnsafeHeapInstrumentation::run(Module &M, ModuleAnalysisManage
                // Try to sniff size from args if 0
                if (size == 0) {
                    if (auto *CI = dyn_cast<CallBase>(I)) {
-                       if (CI->arg_size() > 0 && CI->getArgOperand(0)->getType()->isIntegerTy()) {
+                       StringRef FnName;
+                       if (Function *CalledFn = CI->getCalledFunction()) {
+                           FnName = CalledFn->getName();
+                       }
+                       if (FnName == "calloc" && CI->arg_size() >= 2) {
+                           if (CI->getArgOperand(0)->getType()->isIntegerTy() && CI->getArgOperand(1)->getType()->isIntegerTy()) {
+                               Value *Arg0 = B.CreateZExtOrTrunc(CI->getArgOperand(0), SizeTy);
+                               Value *Arg1 = B.CreateZExtOrTrunc(CI->getArgOperand(1), SizeTy);
+                               SizeVal = B.CreateMul(Arg0, Arg1);
+                           }
+                       } else if (FnName == "realloc" && CI->arg_size() >= 2) {
+                           if (CI->getArgOperand(1)->getType()->isIntegerTy()) {
+                               SizeVal = B.CreateZExtOrTrunc(CI->getArgOperand(1), SizeTy);
+                           }
+                       } else if (CI->arg_size() > 0 && CI->getArgOperand(0)->getType()->isIntegerTy()) {
                            SizeVal = B.CreateZExtOrTrunc(CI->getArgOperand(0), SizeTy);
                        }
                    }
@@ -129,6 +148,8 @@ PreservedAnalyses UnsafeHeapInstrumentation::run(Module &M, ModuleAnalysisManage
                
                B.CreateCall(ReportAlloc, {VoidPtr, SizeVal, ConstantInt::get(IdTy, id)});
                Modified = true;
+          } else {
+               LLVM_DEBUG(dbgs() << "SVF: Warning: Allocation returning non-pointer type: " << *Ptr << "\n");
           }
       }
 

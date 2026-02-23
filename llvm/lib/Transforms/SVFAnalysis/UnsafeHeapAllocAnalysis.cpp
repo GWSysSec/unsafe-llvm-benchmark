@@ -3,6 +3,9 @@
 #include "llvm/IR/Instructions.h"
 #include "llvm/IR/Metadata.h"
 #include "llvm/Support/raw_ostream.h"
+#include "llvm/Support/Debug.h"
+
+#define DEBUG_TYPE "unsafe-heap-alloc"
 
 // SVF Includes
 #include "SVFIR/SVFVariables.h"
@@ -24,7 +27,7 @@ UnsafeHeapAllocAnalysis::Result UnsafeHeapAllocAnalysis::run(Module &M, ModuleAn
     return Res;
   }
 
-  errs() << "[UnsafeHeapAllocAnalysis] Running Analysis on " << M.getName() << "\n";
+  LLVM_DEBUG(dbgs() << "[UnsafeHeapAllocAnalysis] Running Analysis on " << M.getName() << "\n");
 
   // 1. Build SVF Module
   LLVMModuleSet* llvmModuleSet = LLVMModuleSet::getLLVMModuleSet();
@@ -53,7 +56,9 @@ UnsafeHeapAllocAnalysis::Result UnsafeHeapAllocAnalysis::run(Module &M, ModuleAn
               // Populate AllocationSites
               if (llvmModuleSet->hasLLVMValue(node)) {
                   const Value* V = llvmModuleSet->getLLVMValue(node);
-                  Res.AllocationSites[V] = id;
+                  if (const Instruction* I = dyn_cast<Instruction>(V)) {
+                      Res.AllocationSites[I] = id;
+                  }
               }
           }
       }

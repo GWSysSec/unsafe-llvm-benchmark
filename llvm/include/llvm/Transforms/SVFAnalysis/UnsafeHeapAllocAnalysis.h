@@ -23,7 +23,7 @@ struct UnsafeHeapAllocAnalysisResult {
   DenseMap<const Instruction*, std::vector<NodeID>> UnsafePtrs;
 
   // Map of Allocation Instruction -> Node ID (for instrumentation)
-  DenseMap<const Value*, NodeID> AllocationSites;
+  DenseMap<const Instruction*, NodeID> AllocationSites;
 };
 
 class UnsafeHeapAllocAnalysis : public AnalysisInfoMixin<UnsafeHeapAllocAnalysis> {
