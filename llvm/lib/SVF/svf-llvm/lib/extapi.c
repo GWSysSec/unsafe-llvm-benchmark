@@ -1369,3 +1369,59 @@ const char *zError(int a)
 {
     return zError_global;
 }
+
+// ============================================================================
+// rust standard allocator functions
+//
+// in non-lto builds, these appear as `declare` in the llvm ir module.
+// svf cannot analyze their bodies, so we annotate them here so that
+// svf correctly classifies their return values as heap objects.
+//
+// signature: __rust_alloc(size: usize, align: usize) -> *mut u8
+// signature: __rust_alloc_zeroed(size: usize, align: usize) -> *mut u8
+// signature: __rust_realloc(ptr: *mut u8, old_size: usize, align: usize, new_size: usize) -> *mut u8
+// signature: __rust_dealloc(ptr: *mut u8, size: usize, align: usize)
+// ============================================================================
+
+// rust global allocator: alloc(size, align) -> *mut u8
+__attribute__((annotate("ALLOC_HEAP_RET"), annotate("AllocSize:Arg0")))
+void *__rust_alloc(unsigned long size, unsigned long align)
+{
+    return NULL;
+}
+
+// rust global allocator: alloc_zeroed(size, align) -> *mut u8
+__attribute__((annotate("ALLOC_HEAP_RET"), annotate("AllocSize:Arg0")))
+void *__rust_alloc_zeroed(unsigned long size, unsigned long align)
+{
+    return NULL;
+}
+
+// rust global allocator: realloc(ptr, old_size, align, new_size) -> *mut u8
+__attribute__((annotate("REALLOC_HEAP_RET"), annotate("AllocSize:Arg3")))
+void *__rust_realloc(void *ptr, unsigned long old_size, unsigned long align, unsigned long new_size)
+{
+    return NULL;
+}
+
+// rust custom #[global_allocator] route: alloc(size, align) -> *mut u8
+__attribute__((annotate("ALLOC_HEAP_RET"), annotate("AllocSize:Arg0")))
+void *__rg_alloc(unsigned long size, unsigned long align)
+{
+    return NULL;
+}
+
+// rust custom #[global_allocator] route: alloc_zeroed(size, align) -> *mut u8
+__attribute__((annotate("ALLOC_HEAP_RET"), annotate("AllocSize:Arg0")))
+void *__rg_alloc_zeroed(unsigned long size, unsigned long align)
+{
+    return NULL;
+}
+
+// rust custom #[global_allocator] route: realloc(ptr, old_size, align, new_size) -> *mut u8
+__attribute__((annotate("REALLOC_HEAP_RET"), annotate("AllocSize:Arg3")))
+void *__rg_realloc(void *ptr, unsigned long old_size, unsigned long align, unsigned long new_size)
+{
+    return NULL;
+}
+
