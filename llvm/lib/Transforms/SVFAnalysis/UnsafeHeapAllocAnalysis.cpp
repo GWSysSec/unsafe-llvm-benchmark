@@ -182,23 +182,26 @@ UnsafeHeapAllocAnalysis::Result UnsafeHeapAllocAnalysis::run(Module &M, ModuleAn
   Andersen* ander = AndersenWaveDiff::createAndersenWaveDiff(pag);
 
   // 4. Populate HeapAllocSizes
-  // Iterate over all nodes in PAG to find Heap Objects
+  // Iterate over all nodes in PAG to find Heap Objects.
+  // Use base node ID to deduplicate: SVF creates GepObjVar field sub-objects
+  // that share the same underlying allocation instruction as their base
+  // HeapObjVar.  Storing both raw IDs causes AllocationSites (keyed by
+  // Instruction*) to be overwritten, leaving the base ID unmatched in the
+  // JSON dump.
   for (auto it = pag->begin(); it != pag->end(); ++it) {
       NodeID id = it->first;
       if (pag->getBaseObject(id)) { // Check if it is a base object
           const BaseObjVar* node = pag->getBaseObject(id);
           if (node->isHeap()) {
-              // Get size if possible. isHeap() usually means malloc/new.
-              // SVF might have size info. 
-              // BaseObjVar has getSize() but it might be symbolic or constant.
-              // For now, we store 0 if unknown, but runtime alloc hook usually gets size from arguments.
-              Res.HeapAllocSizes[id] = 0; 
+              // use base object id to avoid duplicate heap objects from gep sub-objects
+              NodeID baseId = pag->getBaseObjVar(id);
+              Res.HeapAllocSizes[baseId] = 0;
 
               // Populate AllocationSites
               if (llvmModuleSet->hasLLVMValue(node)) {
                   const Value* V = llvmModuleSet->getLLVMValue(node);
                   if (const Instruction* I = dyn_cast<Instruction>(V)) {
-                      Res.AllocationSites[I] = id;
+                      Res.AllocationSites[I] = baseId;
                   }
               }
           }
