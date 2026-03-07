@@ -2,6 +2,7 @@
 #include "llvm/IR/Module.h"
 #include "llvm/IR/Instructions.h"
 #include "llvm/IR/Metadata.h"
+#include "llvm/IR/DebugInfoMetadata.h"
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/CommandLine.h"
@@ -51,6 +52,18 @@ static std::string instrToString(const Instruction *I) {
   return rso.str();
 }
 
+/// helper: get source location json fragment from instruction debug info
+static std::string getSourceLocJSON(const Instruction *I) {
+  if (!I) return "{\"file\": \"\", \"line\": 0, \"col\": 0}";
+  const DebugLoc &DL = I->getDebugLoc();
+  if (!DL) return "{\"file\": \"\", \"line\": 0, \"col\": 0}";
+  std::string file = DL->getFilename().str();
+  unsigned line = DL->getLine();
+  unsigned col = DL->getColumn();
+  return "{\"file\": \"" + jsonEscape(file) + "\", \"line\": " +
+         std::to_string(line) + ", \"col\": " + std::to_string(col) + "}";
+}
+
 /// dump analysis results as json to svf_pts_to.json
 static void dumpResultsAsJSON(const UnsafeHeapAllocAnalysis::Result &Res,
                                Module &M, LLVMModuleSet *llvmModuleSet,
@@ -88,10 +101,20 @@ static void dumpResultsAsJSON(const UnsafeHeapAllocAnalysis::Result &Res,
       }
     }
 
+    // get source location from the allocation instruction
+    std::string srcLocJSON = "{\"file\": \"\", \"line\": 0, \"col\": 0}";
+    for (const auto &site : Res.AllocationSites) {
+      if (site.second == kv.first) {
+        srcLocJSON = getSourceLocJSON(site.first);
+        break;
+      }
+    }
+
     OS << "    {\"node_id\": " << kv.first
        << ", \"alloc_fn\": \"" << jsonEscape(allocFn) << "\""
        << ", \"size\": " << kv.second
        << ", \"source\": \"" << jsonEscape(srcLoc) << "\""
+       << ", \"source_loc\": " << srcLocJSON
        << "}";
   }
   OS << "\n  ],\n";
@@ -109,15 +132,12 @@ static void dumpResultsAsJSON(const UnsafeHeapAllocAnalysis::Result &Res,
 
     OS << "    {\"instruction\": \"" << jsonEscape(instrToString(kv.first)) << "\""
        << ", \"function\": \"" << jsonEscape(funcName) << "\""
+       << ", \"source_loc\": " << getSourceLocJSON(kv.first)
        << ", \"targets\": [";
 
     for (size_t i = 0; i < kv.second.size(); ++i) {
       if (i > 0) OS << ", ";
       OS << kv.second[i];
-
-      // classify target type
-      const BaseObjVar *baseObj = pag->getBaseObject(kv.second[i]);
-      (void)baseObj; // used only in json below
     }
     OS << "]"
        << ", \"num_heap_targets\": " << kv.second.size()
@@ -142,6 +162,7 @@ static void dumpResultsAsJSON(const UnsafeHeapAllocAnalysis::Result &Res,
     OS << "    {\"instruction\": \"" << jsonEscape(instrToString(kv.first)) << "\""
        << ", \"node_id\": " << kv.second
        << ", \"alloc_fn\": \"" << jsonEscape(allocFn) << "\""
+       << ", \"source_loc\": " << getSourceLocJSON(kv.first)
        << "}";
   }
   OS << "\n  ],\n";

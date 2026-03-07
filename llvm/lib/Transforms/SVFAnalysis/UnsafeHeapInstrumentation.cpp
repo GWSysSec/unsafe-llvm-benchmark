@@ -33,6 +33,9 @@ PreservedAnalyses UnsafeHeapInstrumentation::run(Module &M, ModuleAnalysisManage
 
   FunctionCallee ReportAlloc = M.getOrInsertFunction("__svf_report_alloc", VoidTy, PtrTy, SizeTy, IdTy);
   FunctionCallee CheckHeap = M.getOrInsertFunction("__svf_check_heap", VoidTy, PtrTy, IdTy);
+  // unsafe heap access hook: same signature as HeapTrackerPass's dyn_unsafe_mem_access(ptr, is_load)
+  Type *BoolTy = Type::getInt1Ty(Ctx);
+  FunctionCallee UnsafeHeapAccess = M.getOrInsertFunction("__svf_unsafe_heap_access", VoidTy, PtrTy, BoolTy);
   // Dealloc hook if needed, but not using for now in instrumentation loop (Dealloc usually handled by FreeInst check? But Rust uses Drop glue)
   // For now we only instrument explicitly identified Heap Allocations for tracking.
 
@@ -165,6 +168,10 @@ PreservedAnalyses UnsafeHeapInstrumentation::run(Module &M, ModuleAnalysisManage
           if (Ptr) {
               Value *VoidPtr = B.CreateBitCast(Ptr, PtrTy);
               B.CreateCall(CheckHeap, {VoidPtr, ConstantInt::get(IdTy, targetId)});
+              // also inject unsafe heap access counter (same sig as dyn_unsafe_mem_access)
+              bool isLoad = isa<LoadInst>(I);
+              Value *IsLoadVal = ConstantInt::get(BoolTy, isLoad);
+              B.CreateCall(UnsafeHeapAccess, {VoidPtr, IsLoadVal});
               Modified = true;
           }
       }
