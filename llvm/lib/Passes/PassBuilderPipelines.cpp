@@ -1376,7 +1376,7 @@ PassBuilder::buildModuleOptimizationPipeline(OptimizationLevel Level,
   // Run partial inlining pass to partially inline functions that have
   // large bodies.
   if (EnableUnsafeHeapAllocAnalysis) {
-      MPM.addPass(UnsafeHeapInstrumentation());
+      MPM.addPass(RequireAnalysisPass<UnsafeHeapAllocAnalysis, Module>());
   }
 
   if (RunPartialInlining)
@@ -1567,10 +1567,14 @@ PassBuilder::buildPerModuleDefaultPipeline(OptimizationLevel Level,
   
   ModulePassManager MPM;
 
-  FunctionPassManager FPM;
+  MPM.addPass(CoroCleanupPass());
 
   // UNSAFE-RUST BEGIN
-  if (EnableInstMarkerPass) {
+  if (EnableUnsafeHeapAllocAnalysis) {
+      MPM.addPass(UnsafeHeapInstrumentation());
+  }
+
+  if (EnableHeapTrackerPass) {
     FunctionPassManager InstFPM;
     InstFPM.addPass(InstMarkerPass());
     MPM.addPass(createModuleToFunctionPassAdaptor(std::move(InstFPM))); 
@@ -1581,7 +1585,7 @@ PassBuilder::buildPerModuleDefaultPipeline(OptimizationLevel Level,
   }
 
   if (EnableUnsafeHeapAllocAnalysis) {
-      MPM.addPass(UnsafeHeapInstrumentation());
+      MPM.addPass(RequireAnalysisPass<UnsafeHeapAllocAnalysis, Module>());
   }
 
   if (EnableUnsafeRustDummyPass) {
@@ -1622,6 +1626,10 @@ PassBuilder::buildPerModuleDefaultPipeline(OptimizationLevel Level,
   // UNSAFE-RUST BEGIN
   // Post-optimization stats collection - placed after all optimizations
   // to capture final optimized code characteristics and prevent optimization away
+
+  if (EnableUnsafeHeapAllocAnalysis) {
+      MPM.addPass(UnsafeHeapInstrumentation());
+  }
 
   if (EnableHeapTrackerPass) {
     FunctionPassManager HeapFPM;
@@ -2133,7 +2141,7 @@ ModulePassManager PassBuilder::buildO0DefaultPipeline(OptimizationLevel Level,
   }
 
   if (EnableUnsafeHeapAllocAnalysis) {
-      MPM.addPass(UnsafeHeapInstrumentation());
+      MPM.addPass(RequireAnalysisPass<UnsafeHeapAllocAnalysis, Module>());
   }
 
   if (EnableUnsafeRustDummyPass) {
