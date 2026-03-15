@@ -89,11 +89,6 @@ UnsafeInstCounterPass::BlockCounts::BlockCounts()
   std::memset(unsafeCounts, 0, sizeof(unsafeCounts));
 }
 
-bool UnsafeInstCounterPass::isPrimaryPackage() {
-  const char *P = std::getenv("CARGO_PRIMARY_PACKAGE");
-  return P && std::strcmp(P, "1") == 0;
-}
-
 bool UnsafeInstCounterPass::getUnsafeCategory(const Instruction &I, 
                                                UnsafeCategory &category) {
   switch (I.getOpcode()) {
@@ -182,8 +177,7 @@ uint32_t UnsafeInstCounterPass::getFunctionId(Function &F) {
 
 PreservedAnalyses UnsafeInstCounterPass::run(Function &F, 
                                              FunctionAnalysisManager &AM) {
-  if (!isPrimaryPackage())
-    return PreservedAnalyses::all();
+
   
   if (!shouldInstrumentFunction(F))
     return PreservedAnalyses::all();

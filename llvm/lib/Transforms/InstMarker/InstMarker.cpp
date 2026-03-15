@@ -30,14 +30,6 @@ using namespace llvm;
 
 namespace {
 
-/// \brief Checks if the current build is for the primary package.
-///
-/// This uses the CARGO_PRIMARY_PACKAGE environment variable.
-bool isPrimaryPackageImpl() {
-  const char *P = getenv("CARGO_PRIMARY_PACKAGE");
-  return P && strcmp(P, "1") == 0;
-}
-
 /// \brief Inserts begin/end markers around sequences of unsafe instructions.
 ///
 /// This function iterates through each basic block to find instructions that
@@ -101,12 +93,6 @@ bool insertUnsafeMarkers(Function &F) {
 const char *llvm::UNSAFE_MARKER_BEGIN = "nop # marker_begin";
 const char *llvm::UNSAFE_MARKER_END = "nop # marker_end";
 
-/// \brief Checks if the current build is for the primary package.
-/// \returns True if this is the primary package build, false otherwise.
-bool InstMarkerPass::isPrimaryPackage() {
-  return isPrimaryPackageImpl();
-}
-
 /// \brief Captures unsafe line information from debug metadata.
 /// \param F The target function to process.
 void InstMarkerPass::captureUnsafeLineInfo(Function &F) {
@@ -144,9 +130,6 @@ void InstMarkerPass::createUnsafeLineMetadata(Instruction &I, unsigned Line,
 
 PreservedAnalyses InstMarkerPass::run(Function &F,
                                       FunctionAnalysisManager &AM) {
-  if (!isPrimaryPackage())
-    return PreservedAnalyses::all();
-
   // Capture line information BEFORE inserting markers
   captureUnsafeLineInfo(F);
   

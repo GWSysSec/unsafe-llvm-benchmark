@@ -97,9 +97,6 @@ bool instrumentExternalCalls(Function &F, FunctionCallee ExtStartFn,
 } // namespace
 
 PreservedAnalyses ExternalCallTrackerPass::run(Module &M, ModuleAnalysisManager &AM) {
-  if (!isPrimaryPackage())
-    return PreservedAnalyses::all();
-
   LLVMContext &Ctx = M.getContext();
   Type *VoidTy = Type::getVoidTy(Ctx);
   Type *Int64Ty = Type::getInt64Ty(Ctx);

@@ -183,12 +183,6 @@ static void dumpResultsAsJSON(const UnsafeHeapAllocAnalysis::Result &Res,
 UnsafeHeapAllocAnalysis::Result UnsafeHeapAllocAnalysis::run(Module &M, ModuleAnalysisManager &AM) {
   Result Res;
   
-  // 0. Check Environment Variable
-  const char *EnvPackage = std::getenv("CARGO_PRIMARY_PACKAGE");
-  if (!EnvPackage || std::strcmp(EnvPackage, "1") != 0) {
-    return Res;
-  }
-
   LLVM_DEBUG(dbgs() << "[UnsafeHeapAllocAnalysis] Running Analysis on " << M.getName() << "\n");
 
   // 1. Build SVF Module

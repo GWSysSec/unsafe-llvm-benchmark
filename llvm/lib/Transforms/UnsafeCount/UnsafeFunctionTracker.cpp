@@ -98,14 +98,7 @@ namespace llvm {
 
 constexpr const char *UnsafeFunctionTrackerPass::FUNCTION_ID_METADATA;
 
-bool UnsafeFunctionTrackerPass::isPrimaryPackage() {
-  const char *P = std::getenv("CARGO_PRIMARY_PACKAGE");
-  return P && std::strcmp(P, "1") == 0;
-}
-
 PreservedAnalyses UnsafeFunctionTrackerPass::run(Module &M, ModuleAnalysisManager &AM) {
-  if (!isPrimaryPackage())
-    return PreservedAnalyses::all();
   
   LLVMContext &Ctx = M.getContext();
   std::vector<FunctionMetadata> metadata;

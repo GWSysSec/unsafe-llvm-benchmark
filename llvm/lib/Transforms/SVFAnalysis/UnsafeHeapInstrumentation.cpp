@@ -15,13 +15,219 @@
 
 using namespace llvm;
 
-PreservedAnalyses UnsafeHeapInstrumentation::run(Module &M, ModuleAnalysisManager &AM) {
-  // Check CARGO_PRIMARY_PACKAGE
-  const char *EnvPackage = std::getenv("CARGO_PRIMARY_PACKAGE");
-  if (!EnvPackage || std::strcmp(EnvPackage, "1") != 0) {
-    return PreservedAnalyses::all();
-  }
+namespace {
 
+// Helper: get a valid debug location.
+// Some instructions lose their !dbg after optimization — scan nearby instructions.
+DebugLoc getValidDebugLoc(Instruction *I) {
+    if (I->getDebugLoc()) return I->getDebugLoc();
+    
+    for (auto It = I->getIterator(), End = I->getParent()->end(); It != End; ++It) {
+        if (It->getDebugLoc()) return It->getDebugLoc();
+    }
+    for (auto It = I->getReverseIterator(), End = I->getParent()->rend(); It != End; ++It) {
+        if (It->getDebugLoc()) return It->getDebugLoc();
+    }
+    
+    if (auto *SP = I->getFunction()->getSubprogram()) {
+        return DILocation::get(SP->getContext(), SP->getLine(), 0, SP);
+    }
+    return DebugLoc();
+}
+
+// Helper: Collect all SESE Region Markers in a function
+void collectRegions(Function &F, std::vector<Instruction*> &Begins, std::vector<Instruction*> &Ends) {
+    for (BasicBlock &BB : F) {
+        for (Instruction &I : BB) {
+            if (CallInst *CI = dyn_cast<CallInst>(&I)) {
+                if (CI->isInlineAsm()) {
+                    if (InlineAsm *IA = dyn_cast<InlineAsm>(CI->getCalledOperand())) {
+                        if (IA->getAsmString() == UNSAFE_MARKER_BEGIN) {
+                            Begins.push_back(&I);
+                        } else if (IA->getAsmString() == UNSAFE_MARKER_END) {
+                            Ends.push_back(&I);
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// Helper: Check if an instruction is in a valid SESE region
+bool isInstructionInUnsafeRegion(Instruction *I, const std::vector<Instruction*> &Begins, 
+                                 const std::vector<Instruction*> &Ends, DominatorTree *DT, PostDominatorTree *PDT) {
+    for (Instruction *Begin : Begins) {
+        for (Instruction *End : Ends) {
+            // For intra-block regions (which is what InstMarker creates), we can easily use `comesBefore`.
+            if (Begin->getParent() == I->getParent() && End->getParent() == I->getParent()) {
+                if (Begin->comesBefore(I) && I->comesBefore(End)) {
+                    return true;
+                }
+            } else {
+                // Cross block check (safeguard)
+                if (DT->dominates(Begin, I) && PDT->dominates(End->getParent(), I->getParent())) {
+                    return true;
+                }
+            }
+        }
+    }
+    return false;
+}
+
+// Helper: Apply Allocation Instrumentation
+bool instrumentAllocations(BasicBlock &BB, const UnsafeHeapAllocAnalysis::Result &AnalysisRes, 
+                           FunctionCallee ReportAlloc, Type* PtrTy, Type* SizeTy, Type* IdTy) {
+    bool Modified = false;
+    std::vector<std::pair<Instruction*, NodeID>> AllocInsts;
+    
+    // Collect allocations
+    for (Instruction &I : BB) {
+        if (AnalysisRes.AllocationSites.count(&I)) {
+            AllocInsts.push_back({&I, AnalysisRes.AllocationSites.find(&I)->second});
+        }
+    }
+
+    // Instrument allocations
+    for (auto &Pair : AllocInsts) {
+        Instruction *I = Pair.first;
+        NodeID id = Pair.second;
+        uint64_t size = 0;
+        if (AnalysisRes.HeapAllocSizes.count(id)) {
+            size = AnalysisRes.HeapAllocSizes.find(id)->second;
+        }
+
+        IRBuilder<> B(I->getParent());
+        if (auto *Invoke = dyn_cast<InvokeInst>(I)) {
+            B.SetInsertPoint(&*Invoke->getNormalDest()->getFirstInsertionPt());
+        } else {
+            B.SetInsertPoint(I->getParent(), std::next(I->getIterator()));
+        }
+
+        Value *Ptr = I;
+        if (Ptr->getType()->isPointerTy()) { 
+             Value *VoidPtr = B.CreateBitCast(Ptr, PtrTy);
+             Value *SizeVal = ConstantInt::get(SizeTy, size);
+             
+             // Try to sniff size from args if 0
+             if (size == 0) {
+                 if (auto *CI = dyn_cast<CallBase>(I)) {
+                     StringRef FnName;
+                     if (Function *CalledFn = CI->getCalledFunction()) {
+                         FnName = CalledFn->getName();
+                     }
+                     if (FnName == "calloc" && CI->arg_size() >= 2) {
+                         if (CI->getArgOperand(0)->getType()->isIntegerTy() && CI->getArgOperand(1)->getType()->isIntegerTy()) {
+                             Value *Arg0 = B.CreateZExtOrTrunc(CI->getArgOperand(0), SizeTy);
+                             Value *Arg1 = B.CreateZExtOrTrunc(CI->getArgOperand(1), SizeTy);
+                             SizeVal = B.CreateMul(Arg0, Arg1);
+                         }
+                     } else if (FnName == "realloc" && CI->arg_size() >= 2) {
+                         if (CI->getArgOperand(1)->getType()->isIntegerTy()) {
+                             SizeVal = B.CreateZExtOrTrunc(CI->getArgOperand(1), SizeTy);
+                         }
+                     } else if (CI->arg_size() > 0 && CI->getArgOperand(0)->getType()->isIntegerTy()) {
+                         SizeVal = B.CreateZExtOrTrunc(CI->getArgOperand(0), SizeTy);
+                     }
+                 }
+             }
+             
+             B.CreateCall(ReportAlloc, {VoidPtr, SizeVal, ConstantInt::get(IdTy, id)});
+             Modified = true;
+        } else {
+             LLVM_DEBUG(dbgs() << "SVF: Warning: Allocation returning non-pointer type: " << *Ptr << "\n");
+        }
+    }
+    return Modified;
+}
+
+// Helper: Instrument deallocations
+bool instrumentDeallocations(BasicBlock &BB, FunctionCallee ReportDealloc, Type* PtrTy) {
+    bool Modified = false;
+    std::vector<CallBase*> DeallocInsts;
+    
+    // Collect deallocations to prevent iterator invalidation
+    for (Instruction &I : BB) {
+        if (CallBase *CB = dyn_cast<CallBase>(&I)) {
+            if (Function *F = CB->getCalledFunction()) {
+                StringRef FnName = F->getName();
+                if (FnName == "free" || FnName == "rust_dealloc" || FnName == "_ZdlPv" || FnName == "__rust_dealloc") {
+                    if (CB->arg_size() > 0 && CB->getArgOperand(0)->getType()->isPointerTy()) {
+                        DeallocInsts.push_back(CB);
+                    }
+                }
+            }
+        }
+    }
+
+    // Instrument deallocations
+    for (CallBase *CB : DeallocInsts) {
+        Value *FreedPtr = CB->getArgOperand(0);
+        IRBuilder<> B(CB); // Insert BEFORE the free call
+        B.SetCurrentDebugLocation(getValidDebugLoc(CB));
+        Value *VoidPtr = B.CreateBitCast(FreedPtr, PtrTy);
+        B.CreateCall(ReportDealloc, {VoidPtr});
+        Modified = true;
+    }
+    return Modified;
+}
+
+// Helper: Instrument all SESE load/stores
+bool instrumentUnsafeAccesses(BasicBlock &BB, const UnsafeHeapAllocAnalysis::Result &AnalysisRes,
+                              const std::vector<Instruction*> &Begins, const std::vector<Instruction*> &Ends,
+                              DominatorTree *DT, PostDominatorTree *PDT,
+                              FunctionCallee PredictHeapAccess, FunctionCallee CheckHeap, FunctionCallee PredictHeapObj,
+                              Type *PtrTy, Type *BoolTy, Type *IdTy) {
+    bool Modified = false;
+    std::vector<Instruction*> UnsafeAccessInsts;
+    std::map<Instruction*, std::vector<NodeID>> PredictedInsts;
+
+    // Collect baseline accesses
+    for (Instruction &I : BB) {
+        if (isa<LoadInst>(I) || isa<StoreInst>(I)) {
+            if (isInstructionInUnsafeRegion(&I, Begins, Ends, DT, PDT)) {
+                UnsafeAccessInsts.push_back(&I);
+                
+                if (AnalysisRes.UnsafePtrs.count(&I)) {
+                    PredictedInsts[&I] = AnalysisRes.UnsafePtrs.find(&I)->second;
+                }
+            }
+        }
+    }
+
+    // Instrument accesses
+    for (Instruction *I : UnsafeAccessInsts) {
+        IRBuilder<> B(I); // Insert BEFORE
+        B.SetCurrentDebugLocation(getValidDebugLoc(I));
+        Value *Ptr = nullptr;
+
+        if (auto *LI = dyn_cast<LoadInst>(I)) Ptr = LI->getPointerOperand();
+        else if (auto *SI = dyn_cast<StoreInst>(I)) Ptr = SI->getPointerOperand();
+        
+        if (Ptr) {
+            Value *VoidPtr = B.CreateBitCast(Ptr, PtrTy);
+            
+            // Increment load/store access ONCE per instruction execution
+            bool isLoad = isa<LoadInst>(I);
+            Value *IsLoadVal = ConstantInt::get(BoolTy, isLoad);
+            B.CreateCall(PredictHeapAccess, {VoidPtr, IsLoadVal});
+            
+            // IF SVF predicted this instruction as a heap alias, register the predicted target objects
+            if (PredictedInsts.count(I)) {
+                for (NodeID targetId : PredictedInsts[I]) {
+                    B.CreateCall(CheckHeap, {VoidPtr, ConstantInt::get(IdTy, targetId)});
+                    B.CreateCall(PredictHeapObj, {VoidPtr, ConstantInt::get(IdTy, targetId)});
+                }
+            }
+            Modified = true;
+        }
+    }
+    return Modified;
+}
+
+} // anonymous namespace
+
+PreservedAnalyses UnsafeHeapInstrumentation::run(Module &M, ModuleAnalysisManager &AM) {
   // Get Analysis Results
   auto &AnalysisRes = AM.getResult<UnsafeHeapAllocAnalysis>(M);
   auto &FAM = AM.getResult<FunctionAnalysisManagerModuleProxy>(M).getManager();
@@ -32,12 +238,11 @@ PreservedAnalyses UnsafeHeapInstrumentation::run(Module &M, ModuleAnalysisManage
   Type *PtrTy = PointerType::getUnqual(Ctx);
   Type *SizeTy = Type::getInt64Ty(Ctx); // usize
   Type *IdTy = Type::getInt64Ty(Ctx);   // u64
+  Type *BoolTy = Type::getInt1Ty(Ctx);
 
   FunctionCallee ReportAlloc = M.getOrInsertFunction("__svf_report_alloc", VoidTy, PtrTy, SizeTy, IdTy);
+  FunctionCallee ReportDealloc = M.getOrInsertFunction("__svf_report_dealloc", VoidTy, PtrTy);
   FunctionCallee CheckHeap = M.getOrInsertFunction("__svf_check_heap", VoidTy, PtrTy, IdTy);
-  
-  // unsafe heap access hooks
-  Type *BoolTy = Type::getInt1Ty(Ctx);
   FunctionCallee PredictHeapAccess = M.getOrInsertFunction("__svf_predict_heap_access", VoidTy, PtrTy, BoolTy);
   FunctionCallee PredictHeapObj = M.getOrInsertFunction("__svf_predict_heap_obj", VoidTy, PtrTy, IdTy);
 
@@ -51,165 +256,15 @@ PreservedAnalyses UnsafeHeapInstrumentation::run(Module &M, ModuleAnalysisManage
     DominatorTree *DT = &FAM.getResult<DominatorTreeAnalysis>(F);
     PostDominatorTree *PDT = &FAM.getResult<PostDominatorTreeAnalysis>(F);
 
-    // 1. Find Markers
-    std::vector<CallInst*> BeginMarkers;
-    std::vector<CallInst*> EndMarkers;
+    std::vector<Instruction*> UnsafeMarkerBegins;
+    std::vector<Instruction*> UnsafeMarkerEnds;
+    collectRegions(F, UnsafeMarkerBegins, UnsafeMarkerEnds);
 
     for (BasicBlock &BB : F) {
-      for (Instruction &I : BB) {
-        if (CallInst *CI = dyn_cast<CallInst>(&I)) {
-          if (CI->isInlineAsm()) {
-            if (InlineAsm *IA = dyn_cast<InlineAsm>(CI->getCalledOperand())) {
-              if (IA->getAsmString() == UNSAFE_MARKER_BEGIN) {
-                BeginMarkers.push_back(CI);
-              } else if (IA->getAsmString() == UNSAFE_MARKER_END) {
-                EndMarkers.push_back(CI);
-              }
-            }
-          }
-        }
-      }
-    }
-
-    // 3. Compute Valid Regions (SESE)
-    struct Region { CallInst *Begin; CallInst *End; };
-    std::vector<Region> ValidRegions;
-
-    for (CallInst *Begin : BeginMarkers) {
-        bool Matched = false;
-        for (CallInst *End : EndMarkers) {
-             // Check Strict Dominance and PostDominance
-             if (DT->dominates(Begin, End) && PDT->dominates(End, Begin)) {
-                 ValidRegions.push_back({Begin, End});
-                 LLVM_DEBUG(dbgs() << "SVF: Valid SESE Region found in " << F.getName() << "\n");
-                 Matched = true;
-                 break; 
-             }
-        }
-        if (!Matched) {
-             LLVM_DEBUG(dbgs() << "SVF: Invalid SESE Region or Unmatched Marker in " << F.getName() << "\n");
-        }
-    }
-
-    // helper: get a valid debug location for instrumented calls.
-    // some instructions lose their !dbg after optimization — scan nearby instructions.
-    auto getValidDebugLoc = [](Instruction *I) -> DebugLoc {
-        if (I->getDebugLoc()) return I->getDebugLoc();
-        // scan forward in the basic block
-        for (auto It = I->getIterator(), End = I->getParent()->end(); It != End; ++It) {
-            if (It->getDebugLoc()) return It->getDebugLoc();
-        }
-        // scan backward
-        for (auto It = I->getReverseIterator(), End = I->getParent()->rend(); It != End; ++It) {
-            if (It->getDebugLoc()) return It->getDebugLoc();
-        }
-        // last resort: use the function's subprogram
-        if (auto *SP = I->getFunction()->getSubprogram()) {
-            return DILocation::get(SP->getContext(), SP->getLine(), 0, SP);
-        }
-        return DebugLoc();
-    };
-
-    // 3. Instrument
-    for (BasicBlock &BB : F) {
-      // Collect instructions to instrument to avoid iterator invalidation
-      std::vector<std::pair<Instruction*, NodeID>> AllocInsts;
-
-      // all load/stores in sese regions that form the baseline
-      std::vector<Instruction*> SeseAccessInsts;
-
-      // svf-predicted heap accesses grouped by instruction
-      std::map<Instruction*, std::vector<NodeID>> PredictedInsts;
-
-      for (Instruction &I : BB) {
-          // Identify Allocations
-          if (AnalysisRes.AllocationSites.count(&I)) {
-             AllocInsts.push_back({&I, AnalysisRes.AllocationSites[&I]});
-          }
-
-          // Identify ALL load/stores in sese regions
-          if (isa<LoadInst>(I) || isa<StoreInst>(I)) {
-              for (const auto &R : ValidRegions) {
-                  if (DT->dominates(R.Begin->getParent(), I.getParent()) && PDT->dominates(R.End->getParent(), I.getParent())) {
-                      SeseAccessInsts.push_back(&I);
-                      // collect svf predictions for this instruction
-                      if (AnalysisRes.UnsafePtrs.count(&I)) {
-                          PredictedInsts[&I] = AnalysisRes.UnsafePtrs[&I];
-                      }
-                      break;
-                  }
-              }
-          }
-      }
-
-      // Apply Allocation Instrumentation
-      for (auto &Pair : AllocInsts) {
-          Instruction *I = Pair.first;
-          NodeID id = Pair.second;
-          uint64_t size = AnalysisRes.HeapAllocSizes[id];
-
-          IRBuilder<> B(I->getParent(), std::next(I->getIterator())); // Insert AFTER
-          Value *Ptr = I;
-          if (Ptr->getType()->isPointerTy()) { // Ensure it is pointer
-               Value *VoidPtr = B.CreateBitCast(Ptr, PtrTy);
-               Value *SizeVal = ConstantInt::get(SizeTy, size);
-               
-               // Try to sniff size from args if 0
-               if (size == 0) {
-                   if (auto *CI = dyn_cast<CallBase>(I)) {
-                       StringRef FnName;
-                       if (Function *CalledFn = CI->getCalledFunction()) {
-                           FnName = CalledFn->getName();
-                       }
-                       if (FnName == "calloc" && CI->arg_size() >= 2) {
-                           if (CI->getArgOperand(0)->getType()->isIntegerTy() && CI->getArgOperand(1)->getType()->isIntegerTy()) {
-                               Value *Arg0 = B.CreateZExtOrTrunc(CI->getArgOperand(0), SizeTy);
-                               Value *Arg1 = B.CreateZExtOrTrunc(CI->getArgOperand(1), SizeTy);
-                               SizeVal = B.CreateMul(Arg0, Arg1);
-                           }
-                       } else if (FnName == "realloc" && CI->arg_size() >= 2) {
-                           if (CI->getArgOperand(1)->getType()->isIntegerTy()) {
-                               SizeVal = B.CreateZExtOrTrunc(CI->getArgOperand(1), SizeTy);
-                           }
-                       } else if (CI->arg_size() > 0 && CI->getArgOperand(0)->getType()->isIntegerTy()) {
-                           SizeVal = B.CreateZExtOrTrunc(CI->getArgOperand(0), SizeTy);
-                       }
-                   }
-               }
-               
-               B.CreateCall(ReportAlloc, {VoidPtr, SizeVal, ConstantInt::get(IdTy, id)});
-               Modified = true;
-          } else {
-               LLVM_DEBUG(dbgs() << "SVF: Warning: Allocation returning non-pointer type: " << *Ptr << "\n");
-          }
-      }
-
-      // instrument all SESE load/stores unconditionally to establish execution baseline
-      for (Instruction *I : SeseAccessInsts) {
-          IRBuilder<> B(I); // Insert BEFORE
-          B.SetCurrentDebugLocation(getValidDebugLoc(I));
-          Value *Ptr = nullptr;
-          if (auto *LI = dyn_cast<LoadInst>(I)) Ptr = LI->getPointerOperand();
-          else if (auto *SI = dyn_cast<StoreInst>(I)) Ptr = SI->getPointerOperand();
-          
-          if (Ptr) {
-              Value *VoidPtr = B.CreateBitCast(Ptr, PtrTy);
-              
-              // Increment load/store access ONCE per instruction execution
-              bool isLoad = isa<LoadInst>(I);
-              Value *IsLoadVal = ConstantInt::get(BoolTy, isLoad);
-              B.CreateCall(PredictHeapAccess, {VoidPtr, IsLoadVal});
-              
-              // IF SVF predicted this instruction as a heap alias, register the predicted target objects
-              if (PredictedInsts.count(I)) {
-                  for (NodeID targetId : PredictedInsts[I]) {
-                      B.CreateCall(CheckHeap, {VoidPtr, ConstantInt::get(IdTy, targetId)});
-                      B.CreateCall(PredictHeapObj, {VoidPtr, ConstantInt::get(IdTy, targetId)});
-                  }
-              }
-              Modified = true;
-          }
-      }
+      Modified |= instrumentAllocations(BB, AnalysisRes, ReportAlloc, PtrTy, SizeTy, IdTy);
+      Modified |= instrumentDeallocations(BB, ReportDealloc, PtrTy);
+      Modified |= instrumentUnsafeAccesses(BB, AnalysisRes, UnsafeMarkerBegins, UnsafeMarkerEnds, DT, PDT, 
+                                           PredictHeapAccess, CheckHeap, PredictHeapObj, PtrTy, BoolTy, IdTy);
     }
   }
 

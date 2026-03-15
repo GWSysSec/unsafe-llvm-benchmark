@@ -36,7 +36,6 @@ public:
   PreservedAnalyses run(Function &F, FunctionAnalysisManager &AM);
 
   static bool isRequired() { return true; }
-  static bool isPrimaryPackage();
 
 private:
   /// \brief Captures line information from unsafe instructions while debug info exists.

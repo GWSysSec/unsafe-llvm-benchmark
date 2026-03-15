@@ -1570,11 +1570,7 @@ PassBuilder::buildPerModuleDefaultPipeline(OptimizationLevel Level,
   MPM.addPass(CoroCleanupPass());
 
   // UNSAFE-RUST BEGIN
-  if (EnableUnsafeHeapAllocAnalysis) {
-      MPM.addPass(UnsafeHeapInstrumentation());
-  }
-
-  if (EnableHeapTrackerPass) {
+  if (EnableInstMarkerPass) {
     FunctionPassManager InstFPM;
     InstFPM.addPass(InstMarkerPass());
     MPM.addPass(createModuleToFunctionPassAdaptor(std::move(InstFPM))); 
@@ -1586,6 +1582,7 @@ PassBuilder::buildPerModuleDefaultPipeline(OptimizationLevel Level,
 
   if (EnableUnsafeHeapAllocAnalysis) {
       MPM.addPass(RequireAnalysisPass<UnsafeHeapAllocAnalysis, Module>());
+      MPM.addPass(UnsafeHeapInstrumentation());
   }
 
   if (EnableUnsafeRustDummyPass) {
@@ -1627,9 +1624,7 @@ PassBuilder::buildPerModuleDefaultPipeline(OptimizationLevel Level,
   // Post-optimization stats collection - placed after all optimizations
   // to capture final optimized code characteristics and prevent optimization away
 
-  if (EnableUnsafeHeapAllocAnalysis) {
-      MPM.addPass(UnsafeHeapInstrumentation());
-  }
+  // Removed duplicate UnsafeHeapInstrumentation
 
   if (EnableHeapTrackerPass) {
     FunctionPassManager HeapFPM;

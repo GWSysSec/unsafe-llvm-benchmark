@@ -176,16 +176,8 @@ bool instrumentUnsafeMemInst(Function &F, FunctionCallee DynUnsafeMemAccessFn,
 
 } // anonymous namespace
 
-bool HeapTrackerPass::isPrimaryPackage() {
-  const char *P = getenv("CARGO_PRIMARY_PACKAGE");
-  return P && strcmp(P, "1") == 0;
-}
-
 PreservedAnalyses HeapTrackerPass::run(Function &F,
                                        FunctionAnalysisManager &AM) {
-  if (!HeapTrackerPass::isPrimaryPackage())
-    return PreservedAnalyses::all();
-
   LLVMContext &C = F.getContext();
   Module *M = F.getParent();
   Type *VoidTy = Type::getVoidTy(C);
