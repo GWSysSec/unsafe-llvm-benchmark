@@ -9,6 +9,7 @@
 
 #define DEBUG_TYPE "unsafe-heap-alloc"
 #include <map>
+#include <set>
 #include "llvm/IR/InlineAsm.h"
 #include "llvm/IR/Intrinsics.h"
 #include "llvm/Transforms/InstMarker/InstMarker.h" 
@@ -177,7 +178,8 @@ bool instrumentUnsafeAccesses(BasicBlock &BB, const UnsafeHeapAllocAnalysis::Res
                               const std::vector<Instruction*> &Begins, const std::vector<Instruction*> &Ends,
                               DominatorTree *DT, PostDominatorTree *PDT,
                               FunctionCallee PredictHeapAccess, FunctionCallee CheckHeap, FunctionCallee PredictHeapObj,
-                              Type *PtrTy, Type *BoolTy, Type *IdTy) {
+                              Type *PtrTy, Type *BoolTy, Type *IdTy,
+                              std::set<NodeID> &ModuleUnsafeTargets) {
     bool Modified = false;
     std::vector<Instruction*> UnsafeAccessInsts;
     std::map<Instruction*, std::vector<NodeID>> PredictedInsts;
@@ -217,6 +219,7 @@ bool instrumentUnsafeAccesses(BasicBlock &BB, const UnsafeHeapAllocAnalysis::Res
                 for (NodeID targetId : PredictedInsts[I]) {
                     B.CreateCall(CheckHeap, {VoidPtr, ConstantInt::get(IdTy, targetId)});
                     B.CreateCall(PredictHeapObj, {VoidPtr, ConstantInt::get(IdTy, targetId)});
+                    ModuleUnsafeTargets.insert(targetId);
                 }
             }
             Modified = true;
@@ -247,6 +250,7 @@ PreservedAnalyses UnsafeHeapInstrumentation::run(Module &M, ModuleAnalysisManage
   FunctionCallee PredictHeapObj = M.getOrInsertFunction("__svf_predict_heap_obj", VoidTy, PtrTy, IdTy);
 
   bool Modified = false;
+  std::set<NodeID> ModuleUnsafeTargets;
 
   for (Function &F : M) {
     if (F.isDeclaration()) continue;
@@ -264,9 +268,13 @@ PreservedAnalyses UnsafeHeapInstrumentation::run(Module &M, ModuleAnalysisManage
       Modified |= instrumentAllocations(BB, AnalysisRes, ReportAlloc, PtrTy, SizeTy, IdTy);
       Modified |= instrumentDeallocations(BB, ReportDealloc, PtrTy);
       Modified |= instrumentUnsafeAccesses(BB, AnalysisRes, UnsafeMarkerBegins, UnsafeMarkerEnds, DT, PDT, 
-                                           PredictHeapAccess, CheckHeap, PredictHeapObj, PtrTy, BoolTy, IdTy);
+                                           PredictHeapAccess, CheckHeap, PredictHeapObj, PtrTy, BoolTy, IdTy,
+                                           ModuleUnsafeTargets);
     }
   }
+
+  errs() << "[UnsafeHeapInstrumentation] Unique Static Unsafe Heap Targets in Regions: " 
+         << ModuleUnsafeTargets.size() << "\n";
 
   return Modified ? PreservedAnalyses::none() : PreservedAnalyses::all();
 }
