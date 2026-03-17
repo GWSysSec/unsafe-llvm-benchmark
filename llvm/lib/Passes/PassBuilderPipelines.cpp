@@ -1375,9 +1375,7 @@ PassBuilder::buildModuleOptimizationPipeline(OptimizationLevel Level,
 
   // Run partial inlining pass to partially inline functions that have
   // large bodies.
-  if (EnableUnsafeHeapAllocAnalysis) {
-      MPM.addPass(RequireAnalysisPass<UnsafeHeapAllocAnalysis, Module>());
-  }
+
 
   if (RunPartialInlining)
     MPM.addPass(PartialInlinerPass());

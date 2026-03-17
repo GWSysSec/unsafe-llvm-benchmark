@@ -1,4 +1,6 @@
 #include "llvm/Transforms/SVFAnalysis/UnsafeHeapAllocAnalysis.h"
+#include <algorithm>
+
 #include "llvm/IR/Module.h"
 #include "llvm/IR/Instructions.h"
 #include "llvm/IR/Metadata.h"
@@ -64,22 +66,29 @@ static std::string getSourceLocJSON(const Instruction *I) {
          std::to_string(line) + ", \"col\": " + std::to_string(col) + "}";
 }
 
-/// dump analysis results as json to svf_pts_to.json
+/// dump analysis results as json
 static void dumpResultsAsJSON(const UnsafeHeapAllocAnalysis::Result &Res,
                                Module &M, LLVMModuleSet *llvmModuleSet,
                                SVFIR *pag) {
   std::error_code EC;
-  raw_fd_ostream OS("svf_pts_to.json", EC, sys::fs::OF_Text);
+  std::string moduleName = M.getName().str();
+  std::replace(moduleName.begin(), moduleName.end(), '/', '_');
+  std::replace(moduleName.begin(), moduleName.end(), '\\', '_');
+  static int dumpCount = 0;
+  std::string filename = "svf_pts_to_" + moduleName + "_" + std::to_string(dumpCount++) + ".json";
+  raw_fd_ostream OS(filename, EC, sys::fs::OF_Text);
+
+
   if (EC) {
-    errs() << "[UnsafeHeapAllocAnalysis] warning: cannot write svf_pts_to.json: "
+    errs() << "[UnsafeHeapAllocAnalysis] warning: cannot write " << filename << ": "
            << EC.message() << "\n";
     return;
   }
 
   OS << "{\n";
 
-  // 1. heap_objects
-  OS << "  \"heap_objects\": [\n";
+  // 1. abstract_heap_objects
+  OS << "  \"abstract_heap_objects\": [\n";
   bool firstObj = true;
   for (const auto &kv : Res.HeapAllocSizes) {
     if (!firstObj) OS << ",\n";
@@ -170,14 +179,14 @@ static void dumpResultsAsJSON(const UnsafeHeapAllocAnalysis::Result &Res,
   // 4. summary
   OS << "  \"summary\": {\n"
      << "    \"module\": \"" << jsonEscape(M.getName().str()) << "\",\n"
-     << "    \"heap_objects_count\": " << Res.HeapAllocSizes.size() << ",\n"
+     << "    \"abstract_heap_objects_count\": " << Res.HeapAllocSizes.size() << ",\n"
      << "    \"unsafe_ptrs_count\": " << Res.UnsafePtrs.size() << ",\n"
      << "    \"allocation_sites_count\": " << Res.AllocationSites.size() << "\n"
      << "  }\n";
 
   OS << "}\n";
 
-  errs() << "[UnsafeHeapAllocAnalysis] dumped points-to results to svf_pts_to.json\n";
+  errs() << "[UnsafeHeapAllocAnalysis] dumped points-to results to " << filename << "\n";
 }
 
 UnsafeHeapAllocAnalysis::Result UnsafeHeapAllocAnalysis::run(Module &M, ModuleAnalysisManager &AM) {
