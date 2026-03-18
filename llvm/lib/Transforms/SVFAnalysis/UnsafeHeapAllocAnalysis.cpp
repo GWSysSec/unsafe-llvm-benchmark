@@ -1,5 +1,6 @@
 #include "llvm/Transforms/SVFAnalysis/UnsafeHeapAllocAnalysis.h"
 #include <algorithm>
+#include <map>
 
 #include "llvm/IR/Module.h"
 #include "llvm/IR/Instructions.h"
@@ -176,6 +177,50 @@ static void dumpResultsAsJSON(const UnsafeHeapAllocAnalysis::Result &Res,
   }
   OS << "\n  ],\n";
 
+  // 4. aliased_allocation_sites
+  OS << "  \"aliased_allocation_sites\": [\n";
+  std::map<NodeID, std::vector<const Instruction*>> AliasMap;
+  for (const auto &kv : Res.UnsafePtrs) {
+    for (NodeID target : kv.second) {
+      AliasMap[target].push_back(kv.first);
+    }
+  }
+
+  bool firstAliased = true;
+  for (const auto &kv : Res.AllocationSites) {
+    NodeID id = kv.second;
+    if (AliasMap.count(id)) {
+      if (!firstAliased) OS << ",\n";
+      firstAliased = false;
+
+      std::string allocFn = "unknown";
+      if (const CallBase *CB = dyn_cast<CallBase>(kv.first)) {
+        if (Function *F = CB->getCalledFunction()) {
+          allocFn = F->getName().str();
+        }
+      }
+
+      OS << "    {\"instruction\": \"" << jsonEscape(instrToString(kv.first)) << "\""
+         << ", \"node_id\": " << id
+         << ", \"alloc_fn\": \"" << jsonEscape(allocFn) << "\""
+         << ", \"source_loc\": " << getSourceLocJSON(kv.first)
+         << ", \"aliased_by_ptrs\": [\n";
+
+      bool firstAliasPtr = true;
+      for (const Instruction *Ptr : AliasMap[id]) {
+        if (!firstAliasPtr) OS << ",\n";
+        firstAliasPtr = false;
+        
+        std::string funcName = Ptr->getFunction() ? Ptr->getFunction()->getName().str() : "unknown";
+        OS << "      {\"instruction\": \"" << jsonEscape(instrToString(Ptr)) << "\""
+           << ", \"function\": \"" << jsonEscape(funcName) << "\""
+           << ", \"source_loc\": " << getSourceLocJSON(Ptr) << "}";
+      }
+      OS << "\n    ]}";
+    }
+  }
+  OS << "\n  ],\n";
+
   // 4. summary
   OS << "  \"summary\": {\n"
      << "    \"module\": \"" << jsonEscape(M.getName().str()) << "\",\n"
@@ -256,10 +301,14 @@ UnsafeHeapAllocAnalysis::Result UnsafeHeapAllocAnalysis::run(Module &M, ModuleAn
                       const PointsTo &pts = ander->getPts(pNodeId);
                       
                       std::vector<NodeID> heapTargets;
+                      DenseSet<NodeID> seenBaseIds;
                       for (NodeID target : pts) {
                           const BaseObjVar* targetNode = pag->getBaseObject(target);
                           if (targetNode && targetNode->isHeap()) {
-                              heapTargets.push_back(target);
+                              NodeID baseId = pag->getBaseObjVar(target);
+                              if (seenBaseIds.insert(baseId).second) {
+                                  heapTargets.push_back(baseId);
+                              }
                           }
                       }
 
