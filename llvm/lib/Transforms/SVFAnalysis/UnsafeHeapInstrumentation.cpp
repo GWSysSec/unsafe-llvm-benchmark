@@ -106,6 +106,12 @@ bool instrumentAllocations(BasicBlock &BB, const UnsafeHeapAllocAnalysis::Result
         }
 
         Value *Ptr = I;
+        if (!Ptr->getType()->isPointerTy()) {
+            if (Ptr->getType()->isStructTy() && Ptr->getType()->getStructNumElements() > 0 && Ptr->getType()->getStructElementType(0)->isPointerTy()) {
+                Ptr = B.CreateExtractValue(I, {0});
+            }
+        }
+
         if (Ptr->getType()->isPointerTy()) { 
              Value *VoidPtr = B.CreateBitCast(Ptr, PtrTy);
              Value *SizeVal = ConstantInt::get(SizeTy, size);
@@ -177,7 +183,7 @@ bool instrumentDeallocations(BasicBlock &BB, FunctionCallee ReportDealloc, Type*
 bool instrumentUnsafeAccesses(BasicBlock &BB, const UnsafeHeapAllocAnalysis::Result &AnalysisRes,
                               const std::vector<Instruction*> &Begins, const std::vector<Instruction*> &Ends,
                               DominatorTree *DT, PostDominatorTree *PDT,
-                              FunctionCallee PredictHeapAccess, FunctionCallee CheckHeap, FunctionCallee PredictHeapObj,
+                              FunctionCallee CheckHeapAccess, FunctionCallee CheckHeap, FunctionCallee AnalyzeHeapObj,
                               Type *PtrTy, Type *BoolTy, Type *IdTy,
                               std::set<NodeID> &ModuleUnsafeTargets) {
     bool Modified = false;
@@ -209,19 +215,18 @@ bool instrumentUnsafeAccesses(BasicBlock &BB, const UnsafeHeapAllocAnalysis::Res
         if (Ptr) {
             Value *VoidPtr = B.CreateBitCast(Ptr, PtrTy);
             
-            // Increment load/store access ONCE per instruction execution
-            bool isLoad = isa<LoadInst>(I);
-            Value *IsLoadVal = ConstantInt::get(BoolTy, isLoad);
-            B.CreateCall(PredictHeapAccess, {VoidPtr, IsLoadVal});
-            
-            // IF SVF predicted this instruction as a heap alias, register the predicted target objects
+            // IF SVF analyzed this instruction as aliasing a heap object, register the target objects
             if (PredictedInsts.count(I)) {
                 for (NodeID targetId : PredictedInsts[I]) {
-                    B.CreateCall(CheckHeap, {VoidPtr, ConstantInt::get(IdTy, targetId)});
-                    B.CreateCall(PredictHeapObj, {VoidPtr, ConstantInt::get(IdTy, targetId)});
+                    B.CreateCall(AnalyzeHeapObj, {VoidPtr, ConstantInt::get(IdTy, targetId)});
                     ModuleUnsafeTargets.insert(targetId);
                 }
             }
+
+            // Increment load/store access ONCE per instruction execution
+            bool isLoad = isa<LoadInst>(I);
+            Value *IsLoadVal = ConstantInt::get(BoolTy, isLoad);
+            B.CreateCall(CheckHeapAccess, {VoidPtr, IsLoadVal});
             Modified = true;
         }
     }
@@ -246,8 +251,8 @@ PreservedAnalyses UnsafeHeapInstrumentation::run(Module &M, ModuleAnalysisManage
   FunctionCallee ReportAlloc = M.getOrInsertFunction("__svf_report_alloc", VoidTy, PtrTy, SizeTy, IdTy);
   FunctionCallee ReportDealloc = M.getOrInsertFunction("__svf_report_dealloc", VoidTy, PtrTy);
   FunctionCallee CheckHeap = M.getOrInsertFunction("__svf_check_heap", VoidTy, PtrTy, IdTy);
-  FunctionCallee PredictHeapAccess = M.getOrInsertFunction("__svf_predict_heap_access", VoidTy, PtrTy, BoolTy);
-  FunctionCallee PredictHeapObj = M.getOrInsertFunction("__svf_predict_heap_obj", VoidTy, PtrTy, IdTy);
+  FunctionCallee CheckHeapAccess = M.getOrInsertFunction("__svf_check_heap_access", VoidTy, PtrTy, BoolTy);
+  FunctionCallee AnalyzeHeapObj = M.getOrInsertFunction("__svf_analyze_heap_obj", VoidTy, PtrTy, IdTy);
 
   bool Modified = false;
   std::set<NodeID> ModuleUnsafeTargets;
@@ -268,7 +273,7 @@ PreservedAnalyses UnsafeHeapInstrumentation::run(Module &M, ModuleAnalysisManage
       Modified |= instrumentAllocations(BB, AnalysisRes, ReportAlloc, PtrTy, SizeTy, IdTy);
       Modified |= instrumentDeallocations(BB, ReportDealloc, PtrTy);
       Modified |= instrumentUnsafeAccesses(BB, AnalysisRes, UnsafeMarkerBegins, UnsafeMarkerEnds, DT, PDT, 
-                                           PredictHeapAccess, CheckHeap, PredictHeapObj, PtrTy, BoolTy, IdTy,
+                                           CheckHeapAccess, CheckHeap, AnalyzeHeapObj, PtrTy, BoolTy, IdTy,
                                            ModuleUnsafeTargets);
     }
   }

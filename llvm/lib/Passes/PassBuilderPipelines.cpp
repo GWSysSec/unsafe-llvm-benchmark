@@ -1173,6 +1173,8 @@ PassBuilder::buildModuleSimplificationPipeline(OptimizationLevel Level,
   MPM.addPass(createModuleToFunctionPassAdaptor(std::move(GlobalCleanupPM),
                                                 PTO.EagerlyInvalidateAnalyses));
 
+
+
   // Invoke the pre-inliner passes for instrumentation PGO or MemProf.
   if (PGOOpt && Phase != ThinOrFullLTOPhase::ThinLTOPostLink &&
       (PGOOpt->Action == PGOOptions::IRInstr ||
@@ -1578,10 +1580,6 @@ PassBuilder::buildPerModuleDefaultPipeline(OptimizationLevel Level,
       MPM.addPass(RuntimeAliasPass());
   }
 
-  if (EnableUnsafeHeapAllocAnalysis) {
-      MPM.addPass(RequireAnalysisPass<UnsafeHeapAllocAnalysis, Module>());
-      MPM.addPass(UnsafeHeapInstrumentation());
-  }
 
   if (EnableUnsafeRustDummyPass) {
     FunctionPassManager DummyFPM;
@@ -1605,8 +1603,23 @@ PassBuilder::buildPerModuleDefaultPipeline(OptimizationLevel Level,
   const ThinOrFullLTOPhase LTOPhase = LTOPreLink
                                           ? ThinOrFullLTOPhase::FullLTOPreLink
                                           : ThinOrFullLTOPhase::None;
+
+
+
   // Add the core simplification pipeline.
   MPM.addPass(buildModuleSimplificationPipeline(Level, LTOPhase));
+
+  // UNSAFE-RUST BEGIN
+  // SVF analysis and instrumentation after simplification (which includes inlining)
+  // but before the module optimization pipeline. At this point:
+  // - Box::new / exchange_malloc / __rust_alloc are inlined into callers
+  // - mem2reg and function-level SROA have cleaned up alloca spam
+  // - Aggressive module-level optimizations haven't run yet
+  if (EnableUnsafeHeapAllocAnalysis) {
+      MPM.addPass(RequireAnalysisPass<UnsafeHeapAllocAnalysis, Module>());
+      MPM.addPass(UnsafeHeapInstrumentation());
+  }
+  // UNSAFE-RUST END
 
   // Now add the optimization pipeline.
   MPM.addPass(buildModuleOptimizationPipeline(Level, LTOPhase));

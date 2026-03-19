@@ -4,12 +4,16 @@
 
 #include "llvm/IR/Module.h"
 #include "llvm/IR/Instructions.h"
+#include "llvm/IR/InlineAsm.h"
 #include "llvm/IR/Metadata.h"
 #include "llvm/IR/DebugInfoMetadata.h"
+#include "llvm/IR/Dominators.h"
+#include "llvm/Analysis/PostDominators.h"
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/FileSystem.h"
+#include "llvm/Transforms/InstMarker/InstMarker.h"
 
 #define DEBUG_TYPE "unsafe-heap-alloc"
 
@@ -234,14 +238,65 @@ static void dumpResultsAsJSON(const UnsafeHeapAllocAnalysis::Result &Res,
   errs() << "[UnsafeHeapAllocAnalysis] dumped points-to results to " << filename << "\n";
 }
 
+// helper: collect all sese region markers in a function
+static void collectRegions(Function &F, std::vector<Instruction*> &Begins, std::vector<Instruction*> &Ends) {
+    for (BasicBlock &BB : F) {
+        for (Instruction &I : BB) {
+            if (CallInst *CI = dyn_cast<CallInst>(&I)) {
+                if (CI->isInlineAsm()) {
+                    if (InlineAsm *IA = dyn_cast<InlineAsm>(CI->getCalledOperand())) {
+                        if (IA->getAsmString() == UNSAFE_MARKER_BEGIN) {
+                            Begins.push_back(&I);
+                        } else if (IA->getAsmString() == UNSAFE_MARKER_END) {
+                            Ends.push_back(&I);
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// helper: check if an instruction is in a valid sese region
+static bool isInstructionInUnsafeRegion(Instruction *I, const std::vector<Instruction*> &Begins, 
+                                 const std::vector<Instruction*> &Ends, DominatorTree *DT, PostDominatorTree *PDT) {
+    for (Instruction *Begin : Begins) {
+        for (Instruction *End : Ends) {
+            // for intra-block regions (which is what instmarker creates), use comesBefore
+            if (Begin->getParent() == I->getParent() && End->getParent() == I->getParent()) {
+                if (Begin->comesBefore(I) && I->comesBefore(End)) {
+                    return true;
+                }
+            } else {
+                // cross block check (safeguard)
+                if (DT->dominates(Begin, I) && PDT->dominates(End->getParent(), I->getParent())) {
+                    return true;
+                }
+            }
+        }
+    }
+    return false;
+}
+
 UnsafeHeapAllocAnalysis::Result UnsafeHeapAllocAnalysis::run(Module &M, ModuleAnalysisManager &AM) {
   Result Res;
+  auto &FAM = AM.getResult<FunctionAnalysisManagerModuleProxy>(M).getManager();
   
   LLVM_DEBUG(dbgs() << "[UnsafeHeapAllocAnalysis] Running Analysis on " << M.getName() << "\n");
 
   // 1. Build SVF Module
   LLVMModuleSet* llvmModuleSet = LLVMModuleSet::getLLVMModuleSet();
   llvmModuleSet->buildSVFModule(M);
+
+  // 1.5. Dynamically register Rust allocators since they may not be recognized by extapi.c
+  for (Function &F : M) {
+      StringRef Name = F.getName();
+      // exchange_malloc is heavily mangled, e.g. `_ZN5alloc5alloc15exchange_malloc17...`
+      if (Name.contains("exchange_malloc") || Name.contains("__rust_alloc")) {
+          std::vector<std::string> annotations = {"ALLOC_HEAP_RET", "AllocSize:Arg0"};
+          llvmModuleSet->setExtFuncAnnotations(&F, annotations);
+      }
+  }
 
   // 2. Build SVFIR (PAG)
   SVFIRBuilder builder;
@@ -278,21 +333,32 @@ UnsafeHeapAllocAnalysis::Result UnsafeHeapAllocAnalysis::run(Module &M, ModuleAn
   }
 
   // 5. Populate UnsafePtrs (Instructions that point to Heap)
+  //    Only query SVF for pointers within SESE unsafe regions (marker_begin/marker_end)
   for (Function &F : M) {
       if (F.isDeclaration()) continue;
+      // skip svf runtime hooks to prevent recursion
+      if (F.getName().starts_with("__svf_")) continue;
+
+      DominatorTree *DT = &FAM.getResult<DominatorTreeAnalysis>(F);
+      PostDominatorTree *PDT = &FAM.getResult<PostDominatorTreeAnalysis>(F);
+
+      std::vector<Instruction*> UnsafeMarkerBegins;
+      std::vector<Instruction*> UnsafeMarkerEnds;
+      collectRegions(F, UnsafeMarkerBegins, UnsafeMarkerEnds);
+
+      // skip functions with no unsafe regions
+      if (UnsafeMarkerBegins.empty()) continue;
+
       for (BasicBlock &BB : F) {
           for (Instruction &I : BB) {
+              if (!isa<LoadInst>(I) && !isa<StoreInst>(I)) continue;
+              if (!isInstructionInUnsafeRegion(&I, UnsafeMarkerBegins, UnsafeMarkerEnds, DT, PDT)) continue;
+
               Value *Ptr = nullptr;
               if (LoadInst *LI = dyn_cast<LoadInst>(&I)) {
                   Ptr = LI->getPointerOperand();
               } else if (StoreInst *SI = dyn_cast<StoreInst>(&I)) {
                   Ptr = SI->getPointerOperand();
-              } else if (GetElementPtrInst *GEP = dyn_cast<GetElementPtrInst>(&I)) {
-                   // GEPs calculate addresses, but don't access memory directly.
-                   // Usually checks are done on Load/Store.
-              } else if (CallBase *CB = dyn_cast<CallBase>(&I)) {
-                   // Calls might access memory, but handling them is harder (alias of args).
-                   // For V1, focus on Load/Store.
               }
 
               if (Ptr) {
