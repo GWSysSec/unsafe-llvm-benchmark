@@ -305,6 +305,152 @@ UnsafeHeapAllocAnalysis::Result UnsafeHeapAllocAnalysis::run(Module &M, ModuleAn
   // 3. Run Andersen
   Andersen* ander = AndersenWaveDiff::createAndersenWaveDiff(pag);
 
+  // 3.5 HashMap RawTable Auditor & Custom DDA (New Phase)
+  errs() << "[UnsafeHeapAllocAnalysis] Running Auditor & Custom DDA\\n";
+  
+  // Phase 1: Auditor
+  std::vector<IntToPtrInst*> brokenIntToPtrs;
+  for (Function &F : M) {
+      if (F.isDeclaration() || F.getName().starts_with("__svf_")) continue;
+      for (BasicBlock &BB : F) {
+          for (Instruction &I : BB) {
+              if (auto *ITP = dyn_cast<IntToPtrInst>(&I)) {
+                  if (llvmModuleSet->hasValueNode(ITP)) {
+                      NodeID node = llvmModuleSet->getValueNode(ITP);
+                      if (ander->getPts(node).empty()) {
+                          brokenIntToPtrs.push_back(ITP);
+                      }
+                  } else {
+                      errs() << "[UnsafeHeapAllocAnalysis] ITP has no value node: " << ITP->getFunction()->getName() << " :: " << *ITP << "\\n";
+                  }
+              }
+          }
+      }
+  }
+
+  errs() << "[UnsafeHeapAllocAnalysis] Found " << brokenIntToPtrs.size() << " broken IntToPtr instructions.\\n";
+
+  // Pre-Compute all StoreInst for the Memory Wall scan
+  std::vector<StoreInst*> allStores;
+  for (Function &F : M) {
+      if (!F.isDeclaration() && !F.getName().starts_with("__svf_")) {
+          for (BasicBlock &BB : F) {
+              for (Instruction &I : BB) {
+                  if (auto *SI = dyn_cast<StoreInst>(&I)) {
+                      allStores.push_back(SI);
+                  }
+              }
+          }
+      }
+  }
+
+  // ddaWalk lambda for reuse
+  auto runDDA = [&](Value *StartV, PointsTo &resolvedPts) {
+      DenseSet<Value*> visited;
+      std::function<void(Value*, unsigned)> walk;
+      walk = [&](Value *V, unsigned depth) {
+          if (depth > 100) { errs() << "    [DDA] Depth limit reached\\n"; return; }
+          if (!visited.insert(V).second) return;
+          
+          if (V->getType()->isPointerTy() && llvmModuleSet->hasValueNode(V)) {
+              NodeID ptrNode = llvmModuleSet->getValueNode(V);
+              const PointsTo &pts = ander->getPts(ptrNode);
+              if (!pts.empty()) {
+                  resolvedPts |= pts;
+                  errs() << "    [DDA] Pointer Hit (resolved): " << *V << " with " << pts.count() << " targets.\\n";
+                  return;
+              }
+          }
+
+          if (auto *PTI = dyn_cast<PtrToIntInst>(V)) {
+              Value *Ptr = PTI->getPointerOperand();
+              if (llvmModuleSet->hasValueNode(Ptr)) {
+                  NodeID ptrNode = llvmModuleSet->getValueNode(Ptr);
+                  const PointsTo &pts = ander->getPts(ptrNode);
+                  resolvedPts |= pts;
+                  if (!pts.empty()) {
+                      errs() << "    [DDA] Origin found: " << *PTI << " with " << pts.count() << " targets.\\n";
+                  }
+              }
+          } else if (auto *CE = dyn_cast<ConstantExpr>(V)) {
+              if (CE->getOpcode() == Instruction::PtrToInt) {
+                  Value *Ptr = CE->getOperand(0);
+                  if (llvmModuleSet->hasValueNode(Ptr)) {
+                      NodeID ptrNode = llvmModuleSet->getValueNode(Ptr);
+                      const PointsTo &pts = ander->getPts(ptrNode);
+                      resolvedPts |= pts;
+                      if (!pts.empty()) {
+                          errs() << "    [DDA] ConstantExpr Origin found: " << *CE << " with " << pts.count() << " targets.\\n";
+                      }
+                  }
+              } else {
+                  for (unsigned i = 0; i < CE->getNumOperands(); ++i) {
+                      walk(CE->getOperand(i), depth + 1);
+                  }
+              }
+          } else if (auto *LI = dyn_cast<LoadInst>(V)) {
+              Value *LoadPtr = LI->getPointerOperand();
+              if (llvmModuleSet->hasValueNode(LoadPtr)) {
+                  NodeID loadNode = llvmModuleSet->getValueNode(LoadPtr);
+                  const PointsTo &loadPts = ander->getPts(loadNode);
+                  
+                  if (!loadPts.empty()) {
+                      for (StoreInst *SI : allStores) {
+                          Value *StorePtr = SI->getPointerOperand();
+                          if (llvmModuleSet->hasValueNode(StorePtr)) {
+                              NodeID storeNode = llvmModuleSet->getValueNode(StorePtr);
+                              const PointsTo &storePts = ander->getPts(storeNode);
+                              if (storePts.intersects(loadPts)) {
+                                  walk(SI->getValueOperand(), depth + 1);
+                              }
+                          }
+                      }
+                  }
+              }
+          } else if (auto *Arg = dyn_cast<Argument>(V)) {
+              Function *F = Arg->getParent();
+              for (User *U : F->users()) {
+                  if (CallBase *CB = dyn_cast<CallBase>(U)) {
+                      if (CB->getCalledFunction() == F) {
+                          walk(CB->getArgOperand(Arg->getArgNo()), depth + 1);
+                      }
+                  }
+              }
+          } else if (auto *I = dyn_cast<Instruction>(V)) {
+              for (Use &U : I->operands()) {
+                  Type *Ty = U.get()->getType();
+                  if (Ty->isIntegerTy() || Ty->isVectorTy() || Ty->isStructTy() || Ty->isPointerTy()) {
+                      walk(U.get(), depth + 1);
+                  }
+              }
+          }
+      };
+      walk(StartV, 0);
+  };
+
+  // Phase 2: DDA Trigger
+  int patchedCount = 0;
+  for (IntToPtrInst *ITP : brokenIntToPtrs) {
+      PointsTo resolvedPts;
+      
+      errs() << "  [DDA] Starting trace for: " << *ITP << "\\n";
+      runDDA(ITP->getOperand(0), resolvedPts);
+
+      // Phase 3: The Merge
+      if (!resolvedPts.empty()) {
+          NodeID targetNode = llvmModuleSet->getValueNode(ITP);
+          ander->unionPts(targetNode, resolvedPts);
+          errs() << "[UnsafeHeapAllocAnalysis] Patched points-to for IntToPtr: " << *ITP << " with " 
+                 << resolvedPts.count() << " targets\\n";
+          patchedCount++;
+      } else {
+          errs() << "[UnsafeHeapAllocAnalysis] FAILED to patch IntToPtr: " << *ITP << "\\n";
+      }
+  }
+  
+  errs() << "[UnsafeHeapAllocAnalysis] DDA phase complete. Patched " << patchedCount << " / " << brokenIntToPtrs.size() << " pointers.\\n";
+
+
   // 4. Populate HeapAllocSizes
   // Iterate over all nodes in PAG to find Heap Objects.
   // Use base node ID to deduplicate: SVF creates GepObjVar field sub-objects
@@ -368,13 +514,27 @@ UnsafeHeapAllocAnalysis::Result UnsafeHeapAllocAnalysis::run(Module &M, ModuleAn
                       
                       std::vector<NodeID> heapTargets;
                       DenseSet<NodeID> seenBaseIds;
-                      for (NodeID target : pts) {
-                          const BaseObjVar* targetNode = pag->getBaseObject(target);
-                          if (targetNode && targetNode->isHeap()) {
-                              NodeID baseId = pag->getBaseObjVar(target);
-                              if (seenBaseIds.insert(baseId).second) {
-                                  heapTargets.push_back(baseId);
+
+                      auto extractTargets = [&](const PointsTo &pointsTo) {
+                          for (NodeID target : pointsTo) {
+                              const BaseObjVar* targetNode = pag->getBaseObject(target);
+                              if (targetNode && targetNode->isHeap()) {
+                                  NodeID baseId = pag->getBaseObjVar(target);
+                                  if (seenBaseIds.insert(baseId).second) {
+                                      heapTargets.push_back(baseId);
+                                  }
                               }
+                          }
+                      };
+                      
+                      extractTargets(pts);
+
+                      if (heapTargets.empty()) {
+                          PointsTo ddaPts;
+                          runDDA(Ptr, ddaPts);
+                          if (!ddaPts.empty()) {
+                              errs() << "[UnsafeHeapAllocAnalysis] SESE Pointer Forward Propagation: On-Demand DDA recovered " << ddaPts.count() << " targets for " << *Ptr << "\\n";
+                              extractTargets(ddaPts);
                           }
                       }
 
