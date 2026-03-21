@@ -134,6 +134,11 @@ void SVFIRBuilder::handleExtCall(const CallBase* cs, const Function* callee)
         NodeID val = llvmModuleSet()->getValueNode(cs);
         NodeID obj = llvmModuleSet()->getObjectNode(cs);
         addAddrWithHeapSz(obj, val, cs);
+
+        if (llvmModuleSet()->is_realloc(callee))
+        {
+            addCopyEdge(getValueNode(cs->getArgOperand(0)), val, CopyStmt::COPYVAL);
+        }
     }
     else if (isHeapAllocExtCallViaArg(callICFGNode))
     {
