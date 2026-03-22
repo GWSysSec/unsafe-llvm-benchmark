@@ -183,7 +183,7 @@ bool instrumentDeallocations(BasicBlock &BB, FunctionCallee ReportDealloc, Type*
 bool instrumentUnsafeAccesses(BasicBlock &BB, const UnsafeHeapAllocAnalysis::Result &AnalysisRes,
                               const std::vector<Instruction*> &Begins, const std::vector<Instruction*> &Ends,
                               DominatorTree *DT, PostDominatorTree *PDT,
-                              FunctionCallee CheckHeapAccess, FunctionCallee CheckHeap, FunctionCallee AnalyzeHeapObj,
+                              FunctionCallee CheckHeapAccess, FunctionCallee AnalyzeHeapObj,
                               Type *PtrTy, Type *BoolTy, Type *IdTy,
                               std::set<NodeID> &ModuleUnsafeTargets) {
     bool Modified = false;
@@ -250,7 +250,6 @@ PreservedAnalyses UnsafeHeapInstrumentation::run(Module &M, ModuleAnalysisManage
 
   FunctionCallee ReportAlloc = M.getOrInsertFunction("__svf_report_alloc", VoidTy, PtrTy, SizeTy, IdTy);
   FunctionCallee ReportDealloc = M.getOrInsertFunction("__svf_report_dealloc", VoidTy, PtrTy);
-  FunctionCallee CheckHeap = M.getOrInsertFunction("__svf_check_heap", VoidTy, PtrTy, IdTy);
   FunctionCallee CheckHeapAccess = M.getOrInsertFunction("__svf_check_heap_access", VoidTy, PtrTy, BoolTy);
   FunctionCallee AnalyzeHeapObj = M.getOrInsertFunction("__svf_analyze_heap_obj", VoidTy, PtrTy, IdTy);
 
@@ -272,8 +271,8 @@ PreservedAnalyses UnsafeHeapInstrumentation::run(Module &M, ModuleAnalysisManage
     for (BasicBlock &BB : F) {
       Modified |= instrumentAllocations(BB, AnalysisRes, ReportAlloc, PtrTy, SizeTy, IdTy);
       Modified |= instrumentDeallocations(BB, ReportDealloc, PtrTy);
-      Modified |= instrumentUnsafeAccesses(BB, AnalysisRes, UnsafeMarkerBegins, UnsafeMarkerEnds, DT, PDT, 
-                                           CheckHeapAccess, CheckHeap, AnalyzeHeapObj, PtrTy, BoolTy, IdTy,
+      Modified |= instrumentUnsafeAccesses(BB, AnalysisRes, UnsafeMarkerBegins, UnsafeMarkerEnds, DT, PDT,
+                                           CheckHeapAccess, AnalyzeHeapObj, PtrTy, BoolTy, IdTy,
                                            ModuleUnsafeTargets);
     }
   }

@@ -22,7 +22,7 @@ if (EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/z3/CMakeLists.txt")
     set(Z3_INCLUDE_GIT_DESCRIBE OFF CACHE BOOL "Don't include git describe" FORCE)
 
     add_subdirectory(z3)
-    
+
     # Set variables for SVF linking
     set(Z3_LIBRARIES libz3)
     set(Z3_INCLUDE_DIRS "${CMAKE_CURRENT_SOURCE_DIR}/z3/src/api" "${CMAKE_CURRENT_BINARY_DIR}/z3/src/api" "${CMAKE_CURRENT_SOURCE_DIR}/z3/src/api/c++")

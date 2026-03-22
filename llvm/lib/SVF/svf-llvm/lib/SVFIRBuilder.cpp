@@ -666,6 +666,12 @@ bool SVFIRBuilder::computeGepOffset(const User *V, AccessPath& ap)
         if(!prevPtrOperand && svfGepTy->isPointerTy()) prevPtrOperand = true;
         const Value* offsetVal = gi.getOperand();
         assert(gepTy != offsetVal->getType() && "iteration and operand have the same type?");
+
+        DBOUT(DPAGBuild, outs() << "GEP Step: gepTy=");
+        DBOUT(DPAGBuild, gepTy->print(outs()));
+        DBOUT(DPAGBuild, outs() << ", isStructTy()=" << gepTy->isStructTy()
+                                << ", offsetVal=" << *offsetVal << "\n");
+
         ap.addOffsetVarAndGepTypePair(getPAG()->getGNode(llvmModuleSet()->getValueNode(offsetVal)), svfGepTy);
 
         //The int value of the current index operand
@@ -700,20 +706,21 @@ bool SVFIRBuilder::computeGepOffset(const User *V, AccessPath& ap)
         }
         else if (gepTy->isSingleValueType())
         {
-            // If it's a non-constant offset access
-            // If its point-to target is struct or array, it's likely an array accessing (%result = gep %struct.A* %a, i32 %non-const-index)
-            // If its point-to target is single value (pointer arithmetic), then it's a variant gep (%result = gep i8* %p, i32 %non-const-index)
+            // if non-constant offset on pointer arithmetic, mark as variant
             if(!op && gepTy->isPointerTy() && gepOp->getSourceElementType()->isSingleValueType())
             {
                 isConst = false;
             }
-
-            // The actual index
-            //s32_t idx = op->getSExtValue();
-
-            // For pointer arithmetic we ignore the byte offset
-            // consider using inferFieldIdxFromByteOffset(geopOp,dataLayout,ap,idx)?
-            // ap.setFldIdx(ap.getConstantFieldIdx() + inferFieldIdxFromByteOffset(geopOp,idx));
+            // if constant non-zero byte offset on pointer type (e.g. hashbrown bucket arithmetic),
+            // force variant to avoid field-sensitivity mismatch between insert/get paths
+            else if (op && gepTy->isPointerTy())
+            {
+                int64_t byteOff = op->getSExtValue();
+                if (byteOff != 0)
+                {
+                    isConst = false;
+                }
+            }
         }
     }
     return isConst;

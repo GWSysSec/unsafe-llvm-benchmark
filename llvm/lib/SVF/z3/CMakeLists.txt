@@ -122,6 +122,16 @@ include(CMakeDependentOption)
 ################################################################################
 set(Z3_COMPONENT_CXX_DEFINES "")
 set(Z3_COMPONENT_CXX_FLAGS "")
+
+# When embedded in LLVM with assertions enabled, HandleLLVMOptions.cmake
+# globally adds -D_DEBUG and -UNDEBUG. Z3's memory_manager.h uses
+# `#if _DEBUG` to select a multi-arg debug allocator whose function
+# overloads only exist under Z3DEBUG (Debug config). This mismatch causes
+# compilation failures. Fix: re-define NDEBUG and undefine _DEBUG for Z3.
+if (LLVM_ENABLE_ASSERTIONS)
+    list(APPEND Z3_COMPONENT_CXX_DEFINES "NDEBUG")
+    list(APPEND Z3_COMPONENT_CXX_FLAGS "-U_DEBUG")
+endif()
 set(Z3_COMPONENT_EXTRA_INCLUDE_DIRS "")
 set(Z3_DEPENDENT_LIBS "")
 set(Z3_DEPENDENT_EXTRA_CXX_LINK_FLAGS "")

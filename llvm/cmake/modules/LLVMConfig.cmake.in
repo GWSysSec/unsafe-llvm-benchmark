@@ -97,6 +97,14 @@ endif()
 
 set(LLVM_WITH_Z3 @LLVM_WITH_Z3@)
 
+# SVF embeds an in-tree Z3 build. Load its exported targets so the
+# z3::libz3 dependency referenced by LLVMSvfCore/LLVMSvfLLVM resolves.
+set(_svf_z3_targets "@CMAKE_BINARY_DIR@/lib/SVF/z3/Z3Targets.cmake")
+if(NOT TARGET z3::libz3 AND EXISTS "${_svf_z3_targets}")
+  include("${_svf_z3_targets}")
+endif()
+unset(_svf_z3_targets)
+
 set(LLVM_ENABLE_DIA_SDK @LLVM_ENABLE_DIA_SDK@)
 
 set(LLVM_NATIVE_ARCH @LLVM_NATIVE_ARCH@)
