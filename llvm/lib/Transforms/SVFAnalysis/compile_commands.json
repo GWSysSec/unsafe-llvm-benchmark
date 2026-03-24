@@ -1,0 +1,12 @@
+[
+  {
+    "directory": "/home/oscar/Projects/unsafebench/unsafe-rust-benchmark/src/llvm-project/llvm/lib/Transforms/SVFAnalysis",
+    "command": "/home/linuxbrew/.linuxbrew/bin/clang++ -I/home/oscar/Projects/unsafebench/unsafe-rust-benchmark/build/x86_64-unknown-linux-gnu/llvm/include -std=c++17   -fno-exceptions -funwind-tables -D_GNU_SOURCE -D_DEBUG -D_GLIBCXX_ASSERTIONS -D__STDC_CONSTANT_MACROS -D__STDC_FORMAT_MACROS -D__STDC_LIMIT_MACROS -I/home/oscar/Projects/unsafebench/unsafe-rust-benchmark/src/llvm-project/llvm/include -I/home/oscar/Projects/unsafebench/unsafe-rust-benchmark/build/x86_64-unknown-linux-gnu/llvm/include -I/home/oscar/Projects/unsafebench/unsafe-rust-benchmark/src/llvm-project/llvm/lib/SVF/svf/include -I/home/oscar/Projects/unsafebench/unsafe-rust-benchmark/src/llvm-project/llvm/lib/SVF/svf-llvm/include -I/home/oscar/Projects/unsafebench/unsafe-rust-benchmark/build/x86_64-unknown-linux-gnu/llvm/build/lib/SVF/include -c /home/oscar/Projects/unsafebench/unsafe-rust-benchmark/src/llvm-project/llvm/lib/Transforms/SVFAnalysis/UnsafeHeapAllocAnalysis.cpp",
+    "file": "/home/oscar/Projects/unsafebench/unsafe-rust-benchmark/src/llvm-project/llvm/lib/Transforms/SVFAnalysis/UnsafeHeapAllocAnalysis.cpp"
+  },
+  {
+    "directory": "/home/oscar/Projects/unsafebench/unsafe-rust-benchmark/src/llvm-project/llvm/lib/Transforms/SVFAnalysis",
+    "command": "/home/linuxbrew/.linuxbrew/bin/clang++ -I/home/oscar/Projects/unsafebench/unsafe-rust-benchmark/build/x86_64-unknown-linux-gnu/llvm/include -std=c++17   -fno-exceptions -funwind-tables -D_GNU_SOURCE -D_DEBUG -D_GLIBCXX_ASSERTIONS -D__STDC_CONSTANT_MACROS -D__STDC_FORMAT_MACROS -D__STDC_LIMIT_MACROS -I/home/oscar/Projects/unsafebench/unsafe-rust-benchmark/src/llvm-project/llvm/include -I/home/oscar/Projects/unsafebench/unsafe-rust-benchmark/build/x86_64-unknown-linux-gnu/llvm/include -I/home/oscar/Projects/unsafebench/unsafe-rust-benchmark/src/llvm-project/llvm/lib/SVF/svf/include -I/home/oscar/Projects/unsafebench/unsafe-rust-benchmark/src/llvm-project/llvm/lib/SVF/svf-llvm/include -I/home/oscar/Projects/unsafebench/unsafe-rust-benchmark/build/x86_64-unknown-linux-gnu/llvm/build/lib/SVF/include -c /home/oscar/Projects/unsafebench/unsafe-rust-benchmark/src/llvm-project/llvm/lib/Transforms/SVFAnalysis/UnsafeHeapInstrumentation.cpp",
+    "file": "/home/oscar/Projects/unsafebench/unsafe-rust-benchmark/src/llvm-project/llvm/lib/Transforms/SVFAnalysis/UnsafeHeapInstrumentation.cpp"
+  }
+]

@@ -1,0 +1,7 @@
+Diagnostics:
+  ClangTidy:
+    Remove:
+      - '*'
+
+InlayHints:
+  Enabled: false

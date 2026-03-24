@@ -1,4 +1,5 @@
 #include "llvm/Transforms/SVFAnalysis/UnsafeHeapAllocAnalysis.h"
+#include "llvm/Transforms/SVFAnalysis/IntToPtrDDA.h"
 #include <algorithm>
 #include <map>
 
@@ -304,10 +305,6 @@ UnsafeHeapAllocAnalysis::Result UnsafeHeapAllocAnalysis::run(Module &M, ModuleAn
     }
   }
 
-  // map from patched inttoptr instructions to their resolved heap targets
-  // used later for forward propagation to downstream unsafe pointers
-  DenseMap<Value*, PointsTo> patchedIntToPtrTargets;
-
   // 1. Build SVF Module
   LLVMModuleSet* llvmModuleSet = LLVMModuleSet::getLLVMModuleSet();
   llvmModuleSet->buildSVFModule(M);
@@ -329,357 +326,9 @@ UnsafeHeapAllocAnalysis::Result UnsafeHeapAllocAnalysis::run(Module &M, ModuleAn
   // 3. Run Andersen
   Andersen* ander = AndersenWaveDiff::createAndersenWaveDiff(pag);
 
-  // 3.5 llvm def-use chain dda for broken inttoptr pointers
-  // svf's pointer solver cannot traverse BinaryOP edges (ptrtoint -> arithmetic -> inttoptr),
-  // so we walk llvm ir def-use chains instead, using andersen for load->store matching.
-  LLVM_DEBUG(dbgs() << "[UnsafeHeapAllocAnalysis] running def-use DDA for broken IntToPtr nodes\n");
-
-  // phase 1: audit — find inttoptr instructions with empty andersen pts
-  std::vector<std::pair<IntToPtrInst*, NodeID>> brokenIntToPtrs;
-  for (Function &F : M) {
-      if (F.isDeclaration() || F.getName().starts_with("__svf_")) continue;
-      for (BasicBlock &BB : F) {
-          for (Instruction &I : BB) {
-              if (auto *ITP = dyn_cast<IntToPtrInst>(&I)) {
-                  if (llvmModuleSet->hasValueNode(ITP)) {
-                      NodeID node = llvmModuleSet->getValueNode(ITP);
-                      if (ander->getPts(node).empty()) {
-                          brokenIntToPtrs.push_back({ITP, node});
-                      }
-                  }
-              }
-          }
-      }
-  }
-
-  LLVM_DEBUG(dbgs() << "[UnsafeHeapAllocAnalysis] found " << brokenIntToPtrs.size()
-                    << " broken IntToPtr instructions\n");
-
-  // global memoization cache for dda results — avoids redundant traversals
-  DenseMap<Value*, PointsTo> ddaCache;
-
-  // helper: extract constant offset from alloca for local struct matching
-  const DataLayout &DL = M.getDataLayout();
-  auto getOffsetFromAlloca = [&](Value *V_ptr, int64_t &offset) -> AllocaInst* {
-      offset = 0;
-      Value *curr = V_ptr;
-      while (curr) {
-          if (auto *GEP = dyn_cast<GetElementPtrInst>(curr)) {
-              APInt gepOffset(64, 0);
-              if (GEP->accumulateConstantOffset(DL, gepOffset)) {
-                  offset += gepOffset.getSExtValue();
-                  curr = GEP->getPointerOperand();
-              } else {
-                  return nullptr;
-              }
-          } else if (auto *BC = dyn_cast<BitCastInst>(curr)) {
-              curr = BC->getOperand(0);
-          } else if (auto *AI = dyn_cast<AllocaInst>(curr)) {
-              return AI;
-          } else {
-              break;
-          }
-      }
-      return nullptr;
-  };
-
-  // phase 2: backward def-use dda walk for each broken inttoptr
-  // lambda: recursively walk backward through llvm def-use chains to find pointer origins
-  std::function<void(Value*, SmallPtrSetImpl<Value*>&, PointsTo&)> walkBackward;
-  walkBackward = [&](Value *V, SmallPtrSetImpl<Value*> &visited, PointsTo &result) {
-      if (!V || !visited.insert(V).second) return;
-
-      // check memoization cache first
-      auto cacheIt = ddaCache.find(V);
-      if (cacheIt != ddaCache.end()) {
-          result |= cacheIt->second;
-          return;
-      }
-
-      // track local result for caching
-      PointsTo localResult;
-
-      // if this value is pointer-typed and andersen has info, use it directly
-      if (V->getType()->isPointerTy() && llvmModuleSet->hasValueNode(V)) {
-          NodeID nid = llvmModuleSet->getValueNode(V);
-          const PointsTo &pts = ander->getPts(nid);
-          if (!pts.empty()) {
-              localResult |= pts;
-              result |= localResult;
-              ddaCache[V] = localResult;
-              return;
-          }
-      }
-
-      // ptrtoint: found the pointer origin, query andersen
-      if (auto *P2I = dyn_cast<PtrToIntInst>(V)) {
-          Value *ptrOp = P2I->getPointerOperand();
-          if (llvmModuleSet->hasValueNode(ptrOp)) {
-              NodeID nid = llvmModuleSet->getValueNode(ptrOp);
-              localResult |= ander->getPts(nid);
-          }
-          result |= localResult;
-          ddaCache[V] = localResult;
-          return;
-      }
-
-      // binary operator (add, sub, and, or, xor) — recurse into both operands
-      if (auto *BO = dyn_cast<BinaryOperator>(V)) {
-          walkBackward(BO->getOperand(0), visited, localResult);
-          walkBackward(BO->getOperand(1), visited, localResult);
-          result |= localResult;
-          ddaCache[V] = localResult;
-          return;
-      }
-
-      // phi node — recurse into all incoming values
-      if (auto *PHI = dyn_cast<PHINode>(V)) {
-          for (unsigned i = 0; i < PHI->getNumIncomingValues(); ++i) {
-              walkBackward(PHI->getIncomingValue(i), visited, localResult);
-          }
-          result |= localResult;
-          ddaCache[V] = localResult;
-          return;
-      }
-
-      // select — recurse into both alternatives
-      if (auto *SEL = dyn_cast<SelectInst>(V)) {
-          walkBackward(SEL->getTrueValue(), visited, localResult);
-          walkBackward(SEL->getFalseValue(), visited, localResult);
-          result |= localResult;
-          ddaCache[V] = localResult;
-          return;
-      }
-
-      // extractvalue / insertvalue — recurse into aggregate operand
-      if (auto *EV = dyn_cast<ExtractValueInst>(V)) {
-          walkBackward(EV->getAggregateOperand(), visited, localResult);
-          result |= localResult;
-          ddaCache[V] = localResult;
-          return;
-      }
-
-      // zext/sext/trunc — recurse into operand
-      if (auto *CI = dyn_cast<CastInst>(V)) {
-          walkBackward(CI->getOperand(0), visited, localResult);
-          result |= localResult;
-          ddaCache[V] = localResult;
-          return;
-      }
-
-      // call instruction — check if it returns an integer that might be a pointer
-      if (auto *Call = dyn_cast<CallInst>(V)) {
-          if (llvmModuleSet->hasValueNode(Call)) {
-              NodeID nid = llvmModuleSet->getValueNode(Call);
-              const PointsTo &pts = ander->getPts(nid);
-              if (!pts.empty()) {
-                  localResult |= pts;
-              }
-          }
-          result |= localResult;
-          ddaCache[V] = localResult;
-          return;
-      }
-
-      // load instruction — andersen-guided store matching
-      // strategy: try same-function first (fast), then module-wide if needed
-      if (auto *LI = dyn_cast<LoadInst>(V)) {
-          Value *loadPtr = LI->getPointerOperand();
-          if (!llvmModuleSet->hasValueNode(loadPtr)) {
-              LLVM_DEBUG(dbgs() << "[DDA-load] no SVF node for load ptr: " << *loadPtr << "\n");
-              ddaCache[V] = localResult;
-              return;
-          }
-          NodeID loadPtrNode = llvmModuleSet->getValueNode(loadPtr);
-          const PointsTo &loadPts = ander->getPts(loadPtrNode);
-          Function *LIFunc = LI->getFunction();
-
-          // helper lambda to check alias and recurse
-          auto checkStoreAlias = [&](StoreInst *SI) {
-              Value *storePtr = SI->getPointerOperand();
-              bool alias = false;
-              if (storePtr == loadPtr) {
-                  alias = true;
-              } else {
-                  int64_t loadOff = 0, storeOff = 0;
-                  AllocaInst *loadAI = getOffsetFromAlloca(loadPtr, loadOff);
-                  AllocaInst *storeAI = getOffsetFromAlloca(storePtr, storeOff);
-                  if (loadAI && storeAI && loadAI == storeAI && loadOff == storeOff) {
-                      alias = true;
-                  } else if (!loadPts.empty() && llvmModuleSet->hasValueNode(storePtr)) {
-                      NodeID storePtrNode = llvmModuleSet->getValueNode(storePtr);
-                      const PointsTo &storePts = ander->getPts(storePtrNode);
-                      PointsTo isect = loadPts;
-                      isect &= storePts;
-                      if (!isect.empty()) alias = true;
-                  }
-              }
-              if (alias) {
-                  walkBackward(SI->getValueOperand(), visited, localResult);
-              }
-          };
-
-          // phase 1: same-function search (fast path)
-          if (LIFunc) {
-              for (BasicBlock &BB : *LIFunc) {
-                  for (Instruction &Inst : BB) {
-                      if (auto *SI = dyn_cast<StoreInst>(&Inst)) {
-                          checkStoreAlias(SI);
-                      }
-                  }
-              }
-          }
-
-          // phase 2: if same-function failed and we have andersen pts info,
-          // do module-wide search using ONLY andersen-guided matching (skip alloca matching)
-          if (localResult.empty() && !loadPts.empty()) {
-              for (Function &Func : M) {
-                  if (&Func == LIFunc) continue;  // already searched
-                  if (Func.isDeclaration() || Func.getName().starts_with("__svf_")) continue;
-                  for (BasicBlock &BB : Func) {
-                      for (Instruction &Inst : BB) {
-                          auto *SI = dyn_cast<StoreInst>(&Inst);
-                          if (!SI) continue;
-                          Value *storePtr = SI->getPointerOperand();
-                          // only use andersen-guided matching for cross-function
-                          if (llvmModuleSet->hasValueNode(storePtr)) {
-                              NodeID storePtrNode = llvmModuleSet->getValueNode(storePtr);
-                              const PointsTo &storePts = ander->getPts(storePtrNode);
-                              PointsTo isect = loadPts;
-                              isect &= storePts;
-                              if (!isect.empty()) {
-                                  walkBackward(SI->getValueOperand(), visited, localResult);
-                              }
-                          }
-                      }
-                  }
-              }
-          }
-
-          // phase 3: if both phases failed, try alloca-offset matching across functions.
-          // When the load pointer is a GEP from an alloca passed to a callee,
-          // Andersen's field-sensitive analysis may create separate field objects
-          // for the GEPs in caller vs callee, causing empty intersection.
-          // Fall back to matching by base alloca + constant offset.
-          if (localResult.empty()) {
-              int64_t loadOff = 0;
-              AllocaInst *loadAI = getOffsetFromAlloca(loadPtr, loadOff);
-              if (loadAI) {
-                  // find all call sites passing this alloca as an argument
-                  for (User *U : loadAI->users()) {
-                      CallBase *CB = dyn_cast<CallBase>(U);
-                      if (!CB) {
-                          // might be a GEP/bitcast used by a call
-                          for (User *UU : U->users()) {
-                              if (auto *cb = dyn_cast<CallBase>(UU))
-                                  CB = cb;
-                          }
-                      }
-                      if (!CB) continue;
-                      Function *Callee = CB->getCalledFunction();
-                      if (!Callee || Callee->isDeclaration()) continue;
-
-                      // find which argument corresponds to our alloca
-                      for (unsigned i = 0; i < CB->arg_size(); ++i) {
-                          Value *arg = CB->getArgOperand(i);
-                          // strip GEPs/bitcasts to find if arg derives from loadAI
-                          int64_t argOff = 0;
-                          AllocaInst *argAI = getOffsetFromAlloca(arg, argOff);
-                          if (argAI != loadAI) continue;
-
-                          // the formal parameter in the callee
-                          Argument *formalArg = Callee->getArg(i);
-                          // target offset in callee = loadOff - argOff
-                          int64_t targetOff = loadOff - argOff;
-
-                          // search callee for stores at same offset from this arg
-                          for (BasicBlock &BB : *Callee) {
-                              for (Instruction &Inst : BB) {
-                                  auto *SI = dyn_cast<StoreInst>(&Inst);
-                                  if (!SI) continue;
-                                  int64_t storeOff = 0;
-                                  Value *storeBase = SI->getPointerOperand();
-                                  // walk GEP chain from store ptr
-                                  Value *curr = storeBase;
-                                  int64_t off = 0;
-                                  bool valid = true;
-                                  while (curr) {
-                                      if (auto *GEP = dyn_cast<GetElementPtrInst>(curr)) {
-                                          APInt gepOff(64, 0);
-                                          if (GEP->accumulateConstantOffset(DL, gepOff)) {
-                                              off += gepOff.getSExtValue();
-                                              curr = GEP->getPointerOperand();
-                                          } else {
-                                              valid = false;
-                                              break;
-                                          }
-                                      } else if (auto *BC = dyn_cast<BitCastInst>(curr)) {
-                                          curr = BC->getOperand(0);
-                                      } else {
-                                          break;
-                                      }
-                                  }
-                                  if (!valid) continue;
-                                  // check if base is the formal arg and offset matches
-                                  if (curr == formalArg && off == targetOff) {
-                                      Value *storeVal = SI->getValueOperand();
-                                      LLVM_DEBUG(dbgs() << "[DDA-load] phase3 MATCH in "
-                                                        << Callee->getName() << " off=" << off << "\n");
-                                      // Option A: use Andersen directly for pointer-typed stored values
-                                      // to bypass visited/ddaCache poisoning from earlier walk phases
-                                      if (storeVal->getType()->isPointerTy() && llvmModuleSet->hasValueNode(storeVal)) {
-                                          NodeID nid = llvmModuleSet->getValueNode(storeVal);
-                                          const PointsTo &svPts = ander->getPts(nid);
-                                          if (!svPts.empty()) {
-                                              localResult |= svPts;
-                                          } else {
-                                              walkBackward(storeVal, visited, localResult);
-                                          }
-                                      } else {
-                                          walkBackward(storeVal, visited, localResult);
-                                      }
-                                  }
-                              }
-                          }
-                      }
-                  }
-              }
-          }
-
-          result |= localResult;
-          ddaCache[V] = localResult;
-          return;
-      }
-
-      // constants (integer literals) — not pointer-derived, skip
-      ddaCache[V] = localResult;
-  };
-
-  // phase 3: run dda and merge results into andersen pts
-  int patchedCount = 0;
-  int failedCount = 0;
-  for (auto &[ITP, nodeId] : brokenIntToPtrs) {
-      SmallPtrSet<Value*, 32> visited;
-      PointsTo ddaResult;
-      walkBackward(ITP->getOperand(0), visited, ddaResult);
-
-      if (!ddaResult.empty()) {
-          ander->unionPts(nodeId, ddaResult);
-          patchedIntToPtrTargets[ITP] = ddaResult;
-          LLVM_DEBUG(dbgs() << "[DDA] patched: " << *ITP << " -> " << ddaResult.count()
-                            << " targets in " << ITP->getFunction()->getName() << "\n");
-          patchedCount++;
-      } else {
-          LLVM_DEBUG(dbgs() << "[DDA] FAILED: " << *ITP
-                            << " in " << ITP->getFunction()->getName() << "\n");
-          failedCount++;
-      }
-  }
-
-  if (!brokenIntToPtrs.empty()) {
-      LLVM_DEBUG(dbgs() << "[UnsafeHeapAllocAnalysis] DDA: patched " << patchedCount
-                        << ", failed " << failedCount << " (cache entries: " << ddaCache.size() << ")\n");
-  }
+  // 3.5 IntToPtr DDA — bridge broken ptrtoint→inttoptr chains
+  IntToPtrDDA dda(M, pag, ander, llvmModuleSet);
+  dda.run();
 
 
   // 4. Populate HeapAllocSizes
@@ -703,6 +352,47 @@ UnsafeHeapAllocAnalysis::Result UnsafeHeapAllocAnalysis::run(Module &M, ModuleAn
                   const Value* V = llvmModuleSet->getLLVMValue(node);
                   if (const Instruction* I = dyn_cast<Instruction>(V)) {
                       Res.AllocationSites[I] = baseId;
+                  }
+              }
+          }
+      }
+  }
+
+  // 4b. Handle ALLOC_HEAP_ARG0 allocations (posix_memalign, etc.)
+  // These create dummy heap nodes not linked to the CallInst, so the loop above
+  // adds them to HeapAllocSizes but NOT AllocationSites.  Trace PAG edges:
+  //   call arg0 (vnArg) <-- Store -- dummy val <-- Addr -- heap obj
+  for (Function &F : M) {
+      if (F.isDeclaration()) continue;
+      for (BasicBlock &BB : F) {
+          for (Instruction &I : BB) {
+              if (!LLVMUtil::isHeapAllocExtCallViaArg(&I)) continue;
+              auto *CI = dyn_cast<CallBase>(&I);
+              if (!CI || Res.AllocationSites.count(CI)) continue;
+
+              Function *Callee = CI->getCalledFunction();
+              if (!Callee) continue;
+              u32_t argPos = LLVMUtil::getHeapAllocHoldingArgPosition(Callee);
+              if (argPos >= CI->arg_size()) continue;
+
+              Value *Arg = CI->getArgOperand(argPos);
+              if (!llvmModuleSet->hasValueNode(Arg)) continue;
+              NodeID vnArg = llvmModuleSet->getValueNode(Arg);
+              SVFVar *argVar = pag->getGNode(vnArg);
+
+              // Walk: vnArg <-- Store -- dummyVal <-- Addr -- heapObj
+              if (!argVar->hasIncomingEdges(SVFStmt::Store)) continue;
+              for (SVFStmt *storeEdge : argVar->getIncomingEdges(SVFStmt::Store)) {
+                  SVFVar *dummyVal = cast<AssignStmt>(storeEdge)->getRHSVar();
+                  if (!dummyVal->hasIncomingEdges(SVFStmt::Addr)) continue;
+                  for (SVFStmt *addrEdge : dummyVal->getIncomingEdges(SVFStmt::Addr)) {
+                      NodeID objId = cast<AssignStmt>(addrEdge)->getRHSVarID();
+                      NodeID baseId = pag->getBaseObjVar(objId);
+                      if (Res.HeapAllocSizes.count(baseId)) {
+                          Res.AllocationSites[CI] = baseId;
+                          LLVM_DEBUG(dbgs() << "[UnsafeHeapAllocAnalysis] ALLOC_HEAP_ARG0: "
+                                            << Callee->getName() << " -> heap node " << baseId << "\n");
+                      }
                   }
               }
           }
@@ -760,79 +450,12 @@ UnsafeHeapAllocAnalysis::Result UnsafeHeapAllocAnalysis::run(Module &M, ModuleAn
                       
                       extractTargets(pts);
 
+                      // If Andersen found no heap targets, try DDA resolution
+                      // (backward walk + Option D forward chain-walking)
                       if (heapTargets.empty()) {
-                          SmallPtrSet<Value*, 32> fwdVisited;
-                          PointsTo ddaPts;
-                          walkBackward(Ptr, fwdVisited, ddaPts);
-                          if (!ddaPts.empty()) {
-                              LLVM_DEBUG(dbgs() << "[DDA] forward prop: " << ddaPts.count() << " targets for " << *Ptr << "\n");
+                          PointsTo ddaPts = dda.resolveTargets(Ptr);
+                          if (!ddaPts.empty())
                               extractTargets(ddaPts);
-                          }
-                      }
-
-                      // Option D: IntToPtr forwarding heuristic
-                      // If still no heap targets, walk the pointer's GEP/bitcast/IntToPtr
-                      // chain looking for a DDA-patched IntToPtr and inherit its targets.
-                      if (heapTargets.empty() && !patchedIntToPtrTargets.empty()) {
-                          SmallPtrSet<Value*, 16> seen;
-                          std::function<bool(Value*)> walkChain;
-                          walkChain = [&](Value *V) -> bool {
-                              if (!V || !seen.insert(V).second) return false;
-                              auto it = patchedIntToPtrTargets.find(V);
-                              if (it != patchedIntToPtrTargets.end()) {
-                                  extractTargets(it->second);
-                                  LLVM_DEBUG(dbgs() << "[DDA] IntToPtr fwd: inherited "
-                                                    << it->second.count() << " targets from patched "
-                                                    << *V << " for " << *Ptr << "\n");
-                                  return true;
-                              }
-                              if (auto *GEP = dyn_cast<GetElementPtrInst>(V))
-                                  return walkChain(GEP->getPointerOperand());
-                              if (auto *BC = dyn_cast<BitCastInst>(V))
-                                  return walkChain(BC->getOperand(0));
-                              if (auto *PHI = dyn_cast<PHINode>(V)) {
-                                  bool found = false;
-                                  for (unsigned i = 0; i < PHI->getNumIncomingValues(); ++i)
-                                      found |= walkChain(PHI->getIncomingValue(i));
-                                  return found;
-                              }
-                              if (auto *SEL = dyn_cast<SelectInst>(V)) {
-                                  return walkChain(SEL->getTrueValue()) |
-                                         walkChain(SEL->getFalseValue());
-                              }
-                              // for loads, check if any stored value derives from a patched IntToPtr
-                              if (auto *LI = dyn_cast<LoadInst>(V)) {
-                                  Value *loadPtr = LI->getPointerOperand();
-                                  if (llvmModuleSet->hasValueNode(loadPtr)) {
-                                      NodeID loadNode = llvmModuleSet->getValueNode(loadPtr);
-                                      const PointsTo &loadPts = ander->getPts(loadNode);
-                                      if (!loadPts.empty()) {
-                                          Function *F = LI->getFunction();
-                                          if (F) {
-                                              for (BasicBlock &BB2 : *F) {
-                                                  for (Instruction &Inst2 : BB2) {
-                                                      if (auto *SI = dyn_cast<StoreInst>(&Inst2)) {
-                                                          Value *storePtr = SI->getPointerOperand();
-                                                          if (llvmModuleSet->hasValueNode(storePtr)) {
-                                                              NodeID storeNode = llvmModuleSet->getValueNode(storePtr);
-                                                              const PointsTo &storePts = ander->getPts(storeNode);
-                                                              PointsTo isect = loadPts;
-                                                              isect &= storePts;
-                                                              if (!isect.empty()) {
-                                                                  if (walkChain(SI->getValueOperand()))
-                                                                      return true;
-                                                              }
-                                                          }
-                                                      }
-                                                  }
-                                              }
-                                          }
-                                      }
-                                  }
-                              }
-                              return false;
-                          };
-                          walkChain(Ptr);
                       }
 
                       if (!heapTargets.empty()) {

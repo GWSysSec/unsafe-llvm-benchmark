@@ -6,6 +6,7 @@ include_directories(
 
 add_llvm_component_library(LLVMSVFAnalysis
   UnsafeHeapAllocAnalysis.cpp
+  IntToPtrDDA.cpp
   UnsafeHeapInstrumentation.cpp
 
   ADDITIONAL_HEADER_DIRS

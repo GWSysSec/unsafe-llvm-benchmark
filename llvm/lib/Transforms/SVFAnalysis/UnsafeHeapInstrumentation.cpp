@@ -106,16 +106,46 @@ bool instrumentAllocations(BasicBlock &BB, const UnsafeHeapAllocAnalysis::Result
         }
 
         Value *Ptr = I;
+
+        // Handle posix_memalign: returns i32, pointer is stored via out-param (arg0)
+        // Find the first load from arg0 after the call to get the allocated pointer.
+        if (auto *CI = dyn_cast<CallBase>(I)) {
+            if (Function *CalledFn = CI->getCalledFunction()) {
+                if (CalledFn->getName() == "posix_memalign" && CI->arg_size() >= 3) {
+                    Value *OutPtr = CI->getArgOperand(0);
+                    // Scan forward for load from the out-pointer
+                    LoadInst *OutLoad = nullptr;
+                    for (auto It = std::next(I->getIterator()), End = I->getParent()->end();
+                         It != End; ++It) {
+                        if (auto *LI = dyn_cast<LoadInst>(&*It)) {
+                            if (LI->getPointerOperand() == OutPtr) {
+                                OutLoad = LI;
+                                break;
+                            }
+                        }
+                    }
+                    if (OutLoad) {
+                        B.SetInsertPoint(OutLoad->getParent(), std::next(OutLoad->getIterator()));
+                        Value *SizeVal = B.CreateZExtOrTrunc(CI->getArgOperand(2), SizeTy);
+                        B.CreateCall(ReportAlloc, {OutLoad, SizeVal, ConstantInt::get(IdTy, id)});
+                        Modified = true;
+                        LLVM_DEBUG(dbgs() << "SVF: Instrumented posix_memalign out-pointer: " << *OutLoad << "\n");
+                        continue;
+                    }
+                }
+            }
+        }
+
         if (!Ptr->getType()->isPointerTy()) {
             if (Ptr->getType()->isStructTy() && Ptr->getType()->getStructNumElements() > 0 && Ptr->getType()->getStructElementType(0)->isPointerTy()) {
                 Ptr = B.CreateExtractValue(I, {0});
             }
         }
 
-        if (Ptr->getType()->isPointerTy()) { 
+        if (Ptr->getType()->isPointerTy()) {
              Value *VoidPtr = B.CreateBitCast(Ptr, PtrTy);
              Value *SizeVal = ConstantInt::get(SizeTy, size);
-             
+
              // Try to sniff size from args if 0
              if (size == 0) {
                  if (auto *CI = dyn_cast<CallBase>(I)) {
@@ -138,7 +168,7 @@ bool instrumentAllocations(BasicBlock &BB, const UnsafeHeapAllocAnalysis::Result
                      }
                  }
              }
-             
+
              B.CreateCall(ReportAlloc, {VoidPtr, SizeVal, ConstantInt::get(IdTy, id)});
              Modified = true;
         } else {
