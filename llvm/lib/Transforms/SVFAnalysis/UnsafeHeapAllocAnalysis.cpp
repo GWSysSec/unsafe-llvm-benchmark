@@ -282,11 +282,31 @@ UnsafeHeapAllocAnalysis::Result UnsafeHeapAllocAnalysis::run(Module &M, ModuleAn
   Result Res;
   auto &FAM = AM.getResult<FunctionAnalysisManagerModuleProxy>(M).getManager();
 
+  LLVM_DEBUG(dbgs() << "[UnsafeHeapAllocAnalysis] Running Analysis on " << M.getName() << "\n");
+
+  // Early exit: skip SVF entirely if the module has no unsafe region markers.
+  // This avoids running the expensive SVF IR builder on crates like
+  // compiler_builtins / memchr that have no unsafe regions to analyze,
+  // and sidesteps a cast<Instruction> assertion in LLVM triggered by
+  // IR patterns in those crates.
+  {
+    bool hasUnsafeMarkers = false;
+    for (Function &F : M) {
+      if (F.isDeclaration()) continue;
+      std::vector<Instruction*> Begins, Ends;
+      collectRegions(F, Begins, Ends);
+      if (!Begins.empty()) { hasUnsafeMarkers = true; break; }
+    }
+    if (!hasUnsafeMarkers) {
+      LLVM_DEBUG(dbgs() << "[UnsafeHeapAllocAnalysis] no unsafe markers in "
+                        << M.getName() << ", skipping\n");
+      return Res;
+    }
+  }
+
   // map from patched inttoptr instructions to their resolved heap targets
   // used later for forward propagation to downstream unsafe pointers
   DenseMap<Value*, PointsTo> patchedIntToPtrTargets;
-  
-  LLVM_DEBUG(dbgs() << "[UnsafeHeapAllocAnalysis] Running Analysis on " << M.getName() << "\n");
 
   // 1. Build SVF Module
   LLVMModuleSet* llvmModuleSet = LLVMModuleSet::getLLVMModuleSet();
