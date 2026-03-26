@@ -1,5 +1,5 @@
 # Enforce some CMake policies
-cmake_minimum_required(VERSION 3.5)
+cmake_minimum_required(VERSION 3.10)
 
 if (POLICY CMP0054)
   cmake_policy(SET CMP0054 NEW)
@@ -57,11 +57,11 @@ list(APPEND CMAKE_MODULE_PATH "${PROJECT_SOURCE_DIR}/cmake/modules")
 ################################################################################
 include(${PROJECT_SOURCE_DIR}/cmake/git_utils.cmake)
 macro(disable_git_describe)
-  message(WARNING "Disabling Z3_INCLUDE_GIT_DESCRIBE")
+  message(STATUS "Disabling Z3_INCLUDE_GIT_DESCRIBE")
   set(Z3_INCLUDE_GIT_DESCRIBE OFF CACHE BOOL "Include git describe output in version output" FORCE)
 endmacro()
 macro(disable_git_hash)
-  message(WARNING "Disabling Z3_INCLUDE_GIT_HASH")
+  message(STATUS "Disabling Z3_INCLUDE_GIT_HASH")
   set(Z3_INCLUDE_GIT_HASH OFF CACHE BOOL "Include git hash in version output" FORCE)
   unset(Z3GITHASH) # Used in configure_file()
 endmacro()
@@ -179,7 +179,8 @@ list(APPEND Z3_COMPONENT_CXX_DEFINES $<$<CONFIG:RelWithDebInfo>:_EXTERNAL_RELEAS
 ################################################################################
 # Find Python
 ################################################################################
-find_package(PythonInterp REQUIRED)
+find_package(Python3 COMPONENTS Interpreter REQUIRED)
+set(PYTHON_EXECUTABLE "${Python3_EXECUTABLE}")
 message(STATUS "PYTHON_EXECUTABLE: ${PYTHON_EXECUTABLE}")
 
 ################################################################################
