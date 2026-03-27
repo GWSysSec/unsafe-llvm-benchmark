@@ -15,7 +15,7 @@ import shutil
 from mk_exception import *
 import mk_genfile_common
 from fnmatch import fnmatch
-import distutils.sysconfig
+import sysconfig
 import compileall
 import subprocess
 
@@ -51,7 +51,8 @@ C_COMPILERS=['gcc', 'clang']
 CSC_COMPILERS=['csc', 'mcs']
 JAVAC=None
 JAR=None
-PYTHON_PACKAGE_DIR=distutils.sysconfig.get_python_lib(prefix=getenv("PREFIX", None))
+_prefix = getenv("PREFIX", None)
+PYTHON_PACKAGE_DIR=sysconfig.get_path('purelib', vars={'base': _prefix, 'platbase': _prefix} if _prefix else {})
 BUILD_DIR='build'
 REV_BUILD_DIR='..'
 SRC_DIR='src'
@@ -1567,7 +1568,7 @@ class PythonInstallComponent(Component):
                                       os.path.join(self.pythonPkgDir,'z3'),
                                       in_prefix=self.in_prefix_install)
 
-        if PYTHON_PACKAGE_DIR != distutils.sysconfig.get_python_lib():
+        if PYTHON_PACKAGE_DIR != sysconfig.get_path('purelib'):
             out.write('\t@echo Z3Py was installed at \'%s\', make sure this directory is in your PYTHONPATH environment variable.' % PYTHON_PACKAGE_DIR)
 
     def mk_uninstall(self, out):
@@ -2581,7 +2582,7 @@ def mk_config():
             print("Python pkg dir: %s" % PYTHON_PACKAGE_DIR)
             if GPROF:
                 print('gprof:          enabled')
-            print('Python version: %s' % distutils.sysconfig.get_python_version())
+            print('Python version: %s' % sysconfig.get_python_version())
             if is_java_enabled():
                 print('JNI Bindings:   %s' % JNI_HOME)
                 print('Java Compiler:  %s' % JAVAC)
