@@ -138,16 +138,18 @@
 // UNSAFE-RUST BEGIN
 #include "llvm/Transforms/UnsafeRustDummy/UnsafeRustDummy.h"
 #include "llvm/Transforms/InstMarker/InstMarker.h"
-#include "llvm/Transforms/RuntimeAlias/RuntimeAlias.h"
-#include "llvm/Transforms/DynamicLineCount/DynamicLineCount.h"
-#include "llvm/Transforms/CpuCycleCount/CpuCycleCount.h"
-#include "llvm/Transforms/CpuCycleCount/ExternalCallTracker.h"
-#include "llvm/Transforms/HeapTracker/HeapTracker.h"
-#include "llvm/Transforms/UnsafeCount/UnsafeFunctionTracker.h"
-#include "llvm/Transforms/UnsafeCount/UnsafeInstCounter.h"
+#include "llvm/Transforms/DynamicAnalysis/DynamicLineCount.h"
+#include "llvm/Transforms/DynamicAnalysis/CpuCycleCount.h"
+#include "llvm/Transforms/DynamicAnalysis/ExternalCallTracker.h"
+#include "llvm/Transforms/DynamicAnalysis/HeapTracker.h"
+#include "llvm/Transforms/DynamicAnalysis/UnsafeFunctionTracker.h"
+#include "llvm/Transforms/DynamicAnalysis/UnsafeInstCounter.h"
+// UNSAFE-RUST END
+// UNSAFE-SVF BEGIN
+#include "llvm/Transforms/SVFAnalysis/RuntimeAlias.h"
 #include "llvm/Transforms/SVFAnalysis/UnsafeHeapAllocAnalysis.h"
 #include "llvm/Transforms/SVFAnalysis/UnsafeHeapInstrumentation.h"
-// UNSAFE-RUST END
+// UNSAFE-SVF END
 
 using namespace llvm;
 
@@ -331,6 +333,9 @@ static cl::opt<bool> EnableUnsafeInstCounterPass(
   cl::desc("Enable the UnsafeInstCounter pass")
 );
 
+// UNSAFE-RUST END
+
+// UNSAFE-SVF BEGIN
 static cl::opt<bool> EnableRuntimeAlias(
   "enable-runtime-alias", cl::init(false), cl::Hidden,
   cl::desc("Enable the RuntimeAlias pass")
@@ -340,7 +345,7 @@ static cl::opt<bool> EnableUnsafeHeapAllocAnalysis(
   "enable-unsafe-heap-alloc-analysis", cl::init(false), cl::Hidden,
   cl::desc("Enable the UnsafeHeapAllocAnalysis pass")
 );
-  // UNSAFE-RUST END
+// UNSAFE-SVF END
 
 namespace llvm {
 cl::opt<bool> EnableMemProfContextDisambiguation(
@@ -1573,13 +1578,8 @@ PassBuilder::buildPerModuleDefaultPipeline(OptimizationLevel Level,
   if (EnableInstMarkerPass) {
     FunctionPassManager InstFPM;
     InstFPM.addPass(InstMarkerPass());
-    MPM.addPass(createModuleToFunctionPassAdaptor(std::move(InstFPM))); 
+    MPM.addPass(createModuleToFunctionPassAdaptor(std::move(InstFPM)));
   }
-
-  if (EnableRuntimeAlias) {
-      MPM.addPass(RuntimeAliasPass());
-  }
-
 
   if (EnableUnsafeRustDummyPass) {
     FunctionPassManager DummyFPM;
@@ -1587,6 +1587,12 @@ PassBuilder::buildPerModuleDefaultPipeline(OptimizationLevel Level,
     MPM.addPass(createModuleToFunctionPassAdaptor(std::move(DummyFPM)));
   }
   // UNSAFE-RUST END
+
+  // UNSAFE-SVF BEGIN
+  if (EnableRuntimeAlias) {
+      MPM.addPass(RuntimeAliasPass());
+  }
+  // UNSAFE-SVF END
 
   // Convert @llvm.global.annotations to !annotation metadata.
   MPM.addPass(Annotation2MetadataPass());
@@ -1609,7 +1615,7 @@ PassBuilder::buildPerModuleDefaultPipeline(OptimizationLevel Level,
   // Add the core simplification pipeline.
   MPM.addPass(buildModuleSimplificationPipeline(Level, LTOPhase));
 
-  // UNSAFE-RUST BEGIN
+  // UNSAFE-SVF BEGIN
   // SVF analysis and instrumentation after simplification (which includes inlining)
   // but before the module optimization pipeline. At this point:
   // - Box::new / exchange_malloc / __rust_alloc are inlined into callers
@@ -1619,7 +1625,7 @@ PassBuilder::buildPerModuleDefaultPipeline(OptimizationLevel Level,
       MPM.addPass(RequireAnalysisPass<UnsafeHeapAllocAnalysis, Module>());
       MPM.addPass(UnsafeHeapInstrumentation());
   }
-  // UNSAFE-RUST END
+  // UNSAFE-SVF END
 
   // Now add the optimization pipeline.
   MPM.addPass(buildModuleOptimizationPipeline(Level, LTOPhase));
@@ -2139,15 +2145,7 @@ ModulePassManager PassBuilder::buildO0DefaultPipeline(OptimizationLevel Level,
   if (EnableInstMarkerPass) {
     FunctionPassManager InstFPM;
     InstFPM.addPass(InstMarkerPass());
-    MPM.addPass(createModuleToFunctionPassAdaptor(std::move(InstFPM))); 
-  }
-
-  if (EnableRuntimeAlias) {
-      MPM.addPass(RuntimeAliasPass());
-  }
-
-  if (EnableUnsafeHeapAllocAnalysis) {
-      MPM.addPass(RequireAnalysisPass<UnsafeHeapAllocAnalysis, Module>());
+    MPM.addPass(createModuleToFunctionPassAdaptor(std::move(InstFPM)));
   }
 
   if (EnableUnsafeRustDummyPass) {
@@ -2156,6 +2154,16 @@ ModulePassManager PassBuilder::buildO0DefaultPipeline(OptimizationLevel Level,
     MPM.addPass(createModuleToFunctionPassAdaptor(std::move(DummyFPM)));
   }
   // UNSAFE-RUST END
+
+  // UNSAFE-SVF BEGIN
+  if (EnableRuntimeAlias) {
+      MPM.addPass(RuntimeAliasPass());
+  }
+
+  if (EnableUnsafeHeapAllocAnalysis) {
+      MPM.addPass(RequireAnalysisPass<UnsafeHeapAllocAnalysis, Module>());
+  }
+  // UNSAFE-SVF END
 
   // Perform pseudo probe instrumentation in O0 mode. This is for the
   // consistency between different build modes. For example, a LTO build can be

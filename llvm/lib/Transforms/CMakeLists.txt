@@ -12,12 +12,10 @@ add_subdirectory(CFGuard)
 add_subdirectory(HipStdPar)
 # UNSAFE-RUST BEGIN
 # add_subdirectory(DebugInfoPreserve)
-add_subdirectory(UnsafeRustDummy)
-add_subdirectory(DynamicLineCount)
-add_subdirectory(CpuCycleCount)
 add_subdirectory(InstMarker)
-add_subdirectory(HeapTracker)
-add_subdirectory(UnsafeCount)
-add_subdirectory(RuntimeAlias)
-add_subdirectory(SVFAnalysis)
+add_subdirectory(DynamicAnalysis)
+add_subdirectory(UnsafeRustDummy)
 # UNSAFE-RUST END
+# UNSAFE-SVF BEGIN
+add_subdirectory(SVFAnalysis)
+# UNSAFE-SVF END

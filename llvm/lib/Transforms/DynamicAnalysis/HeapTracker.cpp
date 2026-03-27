@@ -13,7 +13,7 @@
 ///
 //===-------------------------------------------------------------------------------===//
 
-#include "llvm/Transforms/HeapTracker/HeapTracker.h"
+#include "llvm/Transforms/DynamicAnalysis/HeapTracker.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Analysis/PostDominators.h"
 #include "llvm/IR/BasicBlock.h"

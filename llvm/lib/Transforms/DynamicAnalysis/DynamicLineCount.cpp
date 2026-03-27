@@ -14,7 +14,7 @@
 ///
 //===----------------------------------------------------------------------===//
 
-#include "llvm/Transforms/DynamicLineCount/DynamicLineCount.h"
+#include "llvm/Transforms/DynamicAnalysis/DynamicLineCount.h"
 #include "llvm/Transforms/InstMarker/InstMarker.h"
 #include "llvm/IR/BasicBlock.h"
 #include "llvm/IR/Constants.h"

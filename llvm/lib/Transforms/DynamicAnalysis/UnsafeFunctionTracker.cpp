@@ -6,7 +6,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "llvm/Transforms/UnsafeCount/UnsafeFunctionTracker.h"
+#include "llvm/Transforms/DynamicAnalysis/UnsafeFunctionTracker.h"
 #include "llvm/Transforms/InstMarker/InstMarker.h"
 #include "llvm/IR/Constants.h"
 #include "llvm/IR/DerivedTypes.h"

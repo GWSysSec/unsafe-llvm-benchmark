@@ -12,7 +12,7 @@
 ///
 //===--------------------------------------------------------------------------------------==//
 
-#include "llvm/Transforms/CpuCycleCount/CpuCycleCount.h"
+#include "llvm/Transforms/DynamicAnalysis/CpuCycleCount.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/InlineAsm.h"

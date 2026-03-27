@@ -32,13 +32,11 @@ add_llvm_component_library(LLVMPasses
   Vectorize
   Instrumentation
   # UNSAFE-RUST BEGIN
-  UnsafeRustDummy
   InstMarker
-  DynamicLineCount
-  CpuCycleCount
-  HeapTracker
-  UnsafeCount
-  RuntimeAlias
-  SVFAnalysis
+  DynamicAnalysis
+  UnsafeRustDummy
   # UNSAFE-RUST END
+  # UNSAFE-SVF BEGIN
+  SVFAnalysis
+  # UNSAFE-SVF END
   )

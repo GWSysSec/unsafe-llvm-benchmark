@@ -6,8 +6,8 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "llvm/Transforms/UnsafeCount/UnsafeInstCounter.h"
-#include "llvm/Transforms/UnsafeCount/UnsafeFunctionTracker.h"
+#include "llvm/Transforms/DynamicAnalysis/UnsafeInstCounter.h"
+#include "llvm/Transforms/DynamicAnalysis/UnsafeFunctionTracker.h"
 #include "llvm/Transforms/InstMarker/InstMarker.h"
 #include "llvm/IR/BasicBlock.h"
 #include "llvm/IR/Constants.h"
