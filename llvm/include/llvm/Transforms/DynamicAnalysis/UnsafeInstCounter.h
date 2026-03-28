@@ -32,7 +32,6 @@ struct UnsafeInstCounterPass : public PassInfoMixin<UnsafeInstCounterPass> {
   PreservedAnalyses run(Function &F, FunctionAnalysisManager &AM);
   
   static bool isRequired() { return true; }
-  static bool isPrimaryPackage();
   
 private:
   /// \brief Categories of unsafe instructions

@@ -34,7 +34,6 @@ struct UnsafeFunctionTrackerPass : public PassInfoMixin<UnsafeFunctionTrackerPas
   PreservedAnalyses run(Module &M, ModuleAnalysisManager &AM);
   
   static bool isRequired() { return true; }
-  static bool isPrimaryPackage();
   
   /// \brief Metadata stored for each function
   struct FunctionMetadata {

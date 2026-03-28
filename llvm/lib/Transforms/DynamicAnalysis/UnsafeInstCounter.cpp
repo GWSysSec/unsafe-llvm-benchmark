@@ -24,6 +24,11 @@ using namespace llvm;
 
 namespace {
 
+static bool isPrimaryPackage() {
+  const char *P = getenv("CARGO_PRIMARY_PACKAGE");
+  return P && strcmp(P, "1") == 0;
+}
+
 constexpr const char *RECORD_BLOCK_FN = "__unsafe_record_block";
 
 /// \brief Check if instruction is a marker
@@ -53,8 +58,8 @@ static bool shouldInstrumentFunction(const Function &F) {
     return false;
   
   StringRef Name = F.getName();
-  return !Name.startswith("__unsafe_") && 
-         !Name.startswith("llvm.");
+  return !Name.starts_with("__unsafe_") &&
+         !Name.starts_with("llvm.");
 }
 
 /// \brief Get or create the record block function
@@ -175,10 +180,11 @@ uint32_t UnsafeInstCounterPass::getFunctionId(Function &F) {
   return IdConst->getZExtValue();
 }
 
-PreservedAnalyses UnsafeInstCounterPass::run(Function &F, 
+PreservedAnalyses UnsafeInstCounterPass::run(Function &F,
                                              FunctionAnalysisManager &AM) {
+  if (!isPrimaryPackage())
+    return PreservedAnalyses::all();
 
-  
   if (!shouldInstrumentFunction(F))
     return PreservedAnalyses::all();
   

@@ -34,9 +34,9 @@ static bool isPrimaryPackage() {
 
 /// Checks if a function name is a runtime function that should not be instrumented.
 static bool isRuntimeFunction(StringRef Name) {
-  return Name.startswith("cpu_cycle_") ||
-         Name.startswith("record_") ||
-         Name.startswith("external_call_");
+  return Name.starts_with("cpu_cycle_") ||
+         Name.starts_with("record_") ||
+         Name.starts_with("external_call_");
 }
 
 /// Instruments external function calls within a function.
@@ -97,6 +97,9 @@ bool instrumentExternalCalls(Function &F, FunctionCallee ExtStartFn,
 } // namespace
 
 PreservedAnalyses ExternalCallTrackerPass::run(Module &M, ModuleAnalysisManager &AM) {
+  if (!isPrimaryPackage())
+    return PreservedAnalyses::all();
+
   LLVMContext &Ctx = M.getContext();
   Type *VoidTy = Type::getVoidTy(Ctx);
   Type *Int64Ty = Type::getInt64Ty(Ctx);

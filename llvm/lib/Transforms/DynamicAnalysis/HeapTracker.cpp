@@ -41,6 +41,12 @@ const char *llvm::DYN_UNSAFE_MEM_ACCESS_FN = "dyn_unsafe_mem_access";
 
 namespace {
 
+static bool isPrimaryPackage() {
+  const char *P = getenv("CARGO_PRIMARY_PACKAGE");
+  return P && strcmp(P, "1") == 0;
+}
+
+
 /// \brief represents a validated sese region bounded by begin/end markers.
 struct SESERegion {
   CallInst *Begin;
@@ -178,6 +184,9 @@ bool instrumentUnsafeMemInst(Function &F, FunctionCallee DynUnsafeMemAccessFn,
 
 PreservedAnalyses HeapTrackerPass::run(Function &F,
                                        FunctionAnalysisManager &AM) {
+  if (!isPrimaryPackage())
+    return PreservedAnalyses::all();
+
   LLVMContext &C = F.getContext();
   Module *M = F.getParent();
   Type *VoidTy = Type::getVoidTy(C);

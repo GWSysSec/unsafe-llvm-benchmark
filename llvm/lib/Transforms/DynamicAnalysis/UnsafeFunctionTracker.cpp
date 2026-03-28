@@ -27,6 +27,11 @@ using namespace llvm;
 
 namespace {
 
+static bool isPrimaryPackage() {
+  const char *P = getenv("CARGO_PRIMARY_PACKAGE");
+  return P && strcmp(P, "1") == 0;
+}
+
 constexpr const char *INIT_METADATA_FN = "__unsafe_init_metadata";
 constexpr const char *RECORD_FUNCTION_FN = "__unsafe_record_function";
 constexpr const char *DUMP_STATS_FN = "__unsafe_dump_stats";
@@ -53,15 +58,14 @@ static bool shouldInstrumentFunction(const Function &F) {
     return false;
   
   StringRef Name = F.getName();
-  return !Name.startswith("__unsafe_") && 
-         !Name.startswith("llvm.");
+  return !Name.starts_with("__unsafe_") &&
+         !Name.starts_with("llvm.");
 }
 
 /// \brief Analyze function for unsafe characteristics according to new criteria
 static bool analyzeFunction(Function &F) {
   // Scan for regions and metadata inside regions
   bool inUnsafeRegion = false;
-  bool foundUnsafeInstInRegion = false;
 
   for (BasicBlock &BB : F) {
     for (Instruction &I : BB) {
@@ -80,15 +84,11 @@ static bool analyzeFunction(Function &F) {
       }
 
       // Only check for unsafe_inst metadata if inside region
-      if (inUnsafeRegion && hasUnsafeMetadata(I)) {
-        foundUnsafeInstInRegion = true;
-        // No need to continue, one is enough
+      if (inUnsafeRegion && hasUnsafeMetadata(I))
         return true;
-      }
     }
   }
 
-  // Only true if at least one unsafe_inst is found inside a region
   return false;
 }
 
@@ -99,7 +99,9 @@ namespace llvm {
 constexpr const char *UnsafeFunctionTrackerPass::FUNCTION_ID_METADATA;
 
 PreservedAnalyses UnsafeFunctionTrackerPass::run(Module &M, ModuleAnalysisManager &AM) {
-  
+  if (!isPrimaryPackage())
+    return PreservedAnalyses::all();
+
   LLVMContext &Ctx = M.getContext();
   std::vector<FunctionMetadata> metadata;
   std::vector<Function*> functionsToInstrument;

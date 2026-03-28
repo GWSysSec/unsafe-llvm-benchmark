@@ -29,6 +29,8 @@
 #include "llvm/IR/Type.h"
 #include "llvm/Support/Casting.h"
 #include "llvm/Transforms/Utils/ModuleUtils.h"
+#include <cstdlib>
+#include <cstring>
 #include <set>
 #include <string>
 #include <vector>
@@ -40,6 +42,11 @@ const char *TRACK_UNSAFE_LINE_EXECUTION_FN = "track_unsafe_line_execution";
 const char *PRINT_UNSAFE_COVERAGE_STATS_FN = "print_unsafe_coverage_stats";
 
 namespace {
+
+static bool isPrimaryPackage() {
+  const char *P = getenv("CARGO_PRIMARY_PACKAGE");
+  return P && strcmp(P, "1") == 0;
+}
 
 /// \brief Setup runtime functions for unsafe line coverage tracking.
 static void setupRuntimeFunctions(Module &M,
@@ -199,6 +206,9 @@ static void createModuleDestructor(Module &M, FunctionCallee PrintStatsFn) {
 } // anonymous namespace
 
 PreservedAnalyses DynamicLineCountPass::run(Module &M, ModuleAnalysisManager &AM) {
+  if (!isPrimaryPackage())
+    return PreservedAnalyses::all();
+
   // Use std::set for deterministic ordering
   std::set<std::string> allUnsafeLines;
   bool Modified = false;

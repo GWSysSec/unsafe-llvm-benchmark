@@ -30,13 +30,14 @@ using namespace llvm;
 
 namespace {
 
-/// \brief Inserts begin/end markers around sequences of unsafe instructions.
+/// \brief Inserts begin/end markers around each contiguous sequence of unsafe
+/// instructions within a basic block.
 ///
-/// This function iterates through each basic block to find instructions that
-/// have been tagged with "unsafe_inst" metadata. It then inserts a
-/// `UNSAFE_MARKER_BEGIN` before the first unsafe instruction and an
-/// `UNSAFE_MARKER_END` after the last one in each contiguous sequence
-/// within a basic block.
+/// This function iterates through each basic block tracking transitions
+/// between safe and unsafe instructions. Each contiguous run of instructions
+/// tagged with "unsafe_inst" metadata gets its own begin/end marker pair.
+/// This avoids the over-approximation of wrapping disjoint unsafe regions
+/// (with safe code between them) in a single marker pair.
 ///
 /// \param F The target function to instrument.
 /// \returns True if the function was modified, false otherwise.
@@ -51,35 +52,44 @@ bool insertUnsafeMarkers(Function &F) {
                      /* Constraints */ "", /* HasSideEffects */ true);
 
   for (BasicBlock &BB : F) {
-    Instruction *FirstUnsafeInst = nullptr;
-    Instruction *LastUnsafeInst = nullptr;
+    bool inUnsafe = false;
+    Instruction *seqStart = nullptr;
 
-    // Find the first and last unsafe instructions in the basic block.
     for (Instruction &I : BB) {
-      if (I.getMetadata("unsafe_inst")) {
-        if (!FirstUnsafeInst) {
-          FirstUnsafeInst = &I;
-        }
-        LastUnsafeInst = &I;
+      bool isUnsafe = I.getMetadata("unsafe_inst") != nullptr;
+
+      if (isUnsafe && !inUnsafe) {
+        // Entering a new unsafe sequence — record where it starts
+        seqStart = &I;
+        inUnsafe = true;
+      } else if (!isUnsafe && inUnsafe) {
+        // Exiting an unsafe sequence — insert markers around [seqStart, prev]
+        IRBuilder<> BeginBuilder(seqStart);
+        BeginBuilder.CreateCall(AsmMarkerBegin);
+
+        // End marker goes before this (first safe) instruction
+        IRBuilder<> EndBuilder(&I);
+        EndBuilder.CreateCall(AsmMarkerEnd);
+
+        Modified = true;
+        inUnsafe = false;
+        seqStart = nullptr;
       }
     }
 
-    // If a sequence was found, insert the markers.
-    if (FirstUnsafeInst && LastUnsafeInst) {
-      // Insert the begin marker before the first unsafe instruction.
-      IRBuilder<> Builder(FirstUnsafeInst);
-      Builder.CreateCall(AsmMarkerBegin);
-      Modified = true;
+    // Handle an unsafe sequence that extends to the end of the BB.
+    // We insert the end marker before the terminator — this is the last
+    // valid insertion point in a BB. If the terminator itself is unsafe,
+    // it will technically fall outside the markers, but we cannot insert
+    // after a terminator in LLVM IR. This matches the original behavior.
+    if (inUnsafe && seqStart) {
+      IRBuilder<> BeginBuilder(seqStart);
+      BeginBuilder.CreateCall(AsmMarkerBegin);
 
-      // Insert the end marker after the last unsafe instruction.
-      if (Instruction *NextInst = LastUnsafeInst->getNextNode()) {
-        IRBuilder<> EndBuilder(NextInst);
-        EndBuilder.CreateCall(AsmMarkerEnd);
-      } else {
-        // If the last unsafe instruction is the terminator, insert before it.
-        IRBuilder<> EndBuilder(BB.getTerminator());
-        EndBuilder.CreateCall(AsmMarkerEnd);
-      }
+      IRBuilder<> EndBuilder(BB.getTerminator());
+      EndBuilder.CreateCall(AsmMarkerEnd);
+
+      Modified = true;
     }
   }
 
