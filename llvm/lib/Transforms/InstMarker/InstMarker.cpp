@@ -102,10 +102,24 @@ bool insertUnsafeMarkers(Function &F) {
 // We provide their definitions here.
 const char *llvm::UNSAFE_MARKER_BEGIN = "nop # marker_begin";
 const char *llvm::UNSAFE_MARKER_END = "nop # marker_end";
+const char *llvm::UNSAFE_SOURCE_LINES_MD = "unsafe_source_lines";
 
 /// \brief Captures unsafe line information from debug metadata.
+///
+/// For each unsafe instruction with debug info, this function:
+/// 1. Attaches per-instruction `unsafe_line_info` metadata (for O0/pre-opt use)
+/// 2. Stores the {line, file} pair in a module-level NamedMDNode
+///    (`unsafe_source_lines`) that survives O2 optimization, enabling
+///    DynamicLineCount to work at all optimization levels.
+///
 /// \param F The target function to process.
+// UNSAFE-RUST BEGIN
 void InstMarkerPass::captureUnsafeLineInfo(Function &F) {
+  Module *M = F.getParent();
+  NamedMDNode *UnsafeLinesMD =
+      M->getOrInsertNamedMetadata(UNSAFE_SOURCE_LINES_MD);
+  LLVMContext &Ctx = F.getContext();
+
   for (BasicBlock &BB : F) {
     for (Instruction &I : BB) {
       if (I.getMetadata("unsafe_inst")) {
@@ -113,13 +127,21 @@ void InstMarkerPass::captureUnsafeLineInfo(Function &F) {
           unsigned Line = Loc->getLine();
           StringRef File = Loc->getFilename();
           if (Line != 0 && !File.empty()) {
+            // Per-instruction metadata (may be lost at O2)
             createUnsafeLineMetadata(I, Line, File);
+
+            // Module-level NamedMDNode entry (survives O2)
+            Metadata *LineNum = ConstantAsMetadata::get(
+                ConstantInt::get(Type::getInt32Ty(Ctx), Line));
+            Metadata *FileName = MDString::get(Ctx, File);
+            UnsafeLinesMD->addOperand(MDNode::get(Ctx, {LineNum, FileName}));
           }
         }
       }
     }
   }
 }
+// UNSAFE-RUST END
 
 /// \brief Creates unsafe line metadata for an instruction.
 /// \param I The instruction to attach metadata to.

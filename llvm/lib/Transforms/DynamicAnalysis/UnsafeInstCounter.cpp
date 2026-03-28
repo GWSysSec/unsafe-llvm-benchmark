@@ -52,11 +52,36 @@ static bool isMarkerInstruction(const Instruction &I, bool &isBegin, bool &isEnd
   return false;
 }
 
+/// \brief Check if a call targets an analysis runtime function inserted by
+/// earlier passes (HeapTracker, DynamicLineCount, CpuCycleCount, etc.).
+/// These must not be counted as user instructions.
+// UNSAFE-RUST BEGIN
+static bool isAnalysisRuntimeCall(const Instruction &I) {
+  auto *CB = dyn_cast<CallBase>(&I);
+  if (!CB) return false;
+
+  Function *Callee = CB->getCalledFunction();
+  if (!Callee) return false;
+
+  StringRef Name = Callee->getName();
+  return Name.starts_with("dyn_mem_") ||           // HeapTracker
+         Name.starts_with("dyn_unsafe_mem_") ||     // HeapTracker
+         Name.starts_with("__unsafe_") ||           // UnsafeFunctionTracker/UnsafeInstCounter
+         Name.starts_with("track_unsafe_line_") ||  // DynamicLineCount
+         Name.starts_with("register_unsafe_line") ||// DynamicLineCount
+         Name.starts_with("print_unsafe_") ||       // DynamicLineCount
+         Name.starts_with("print_cpu_cycle_") ||    // CpuCycleCount
+         Name.starts_with("cpu_cycle_") ||          // CpuCycleCount
+         Name.starts_with("record_") ||             // CpuCycleCount
+         Name.starts_with("external_call_");        // ExternalCallTracker
+}
+// UNSAFE-RUST END
+
 /// \brief Check if function should be instrumented
 static bool shouldInstrumentFunction(const Function &F) {
   if (F.isDeclaration() || F.isIntrinsic())
     return false;
-  
+
   StringRef Name = F.getName();
   return !Name.starts_with("__unsafe_") &&
          !Name.starts_with("llvm.");
@@ -150,7 +175,15 @@ UnsafeInstCounterPass::analyzeBasicBlock(BasicBlock &BB) {
       }
       continue; // Don't count markers
     }
-    
+
+    // UNSAFE-RUST BEGIN
+    // Skip calls to analysis runtime functions inserted by earlier passes
+    // (e.g., HeapTracker's dyn_mem_access). Without this, pass interaction
+    // inflates unsafe instruction counts.
+    if (isAnalysisRuntimeCall(I))
+      continue;
+    // UNSAFE-RUST END
+
     // Count all instructions
     counts.totalInsts++;
     

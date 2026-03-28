@@ -32,12 +32,23 @@ static bool isPrimaryPackage() {
   return P && strcmp(P, "1") == 0;
 }
 
-/// Checks if a function name is a runtime function that should not be instrumented.
+/// Checks if a function name is an analysis runtime function that should not
+/// be instrumented. Covers all runtime functions from every dynamic analysis
+/// pass to prevent cross-pass interference.
+// UNSAFE-RUST BEGIN
 static bool isRuntimeFunction(StringRef Name) {
-  return Name.starts_with("cpu_cycle_") ||
-         Name.starts_with("record_") ||
-         Name.starts_with("external_call_");
+  return Name.starts_with("cpu_cycle_") ||          // CpuCycleCount
+         Name.starts_with("record_") ||             // CpuCycleCount
+         Name.starts_with("print_cpu_cycle_") ||    // CpuCycleCount
+         Name.starts_with("external_call_") ||      // ExternalCallTracker
+         Name.starts_with("dyn_mem_") ||            // HeapTracker
+         Name.starts_with("dyn_unsafe_mem_") ||     // HeapTracker
+         Name.starts_with("__unsafe_") ||           // UnsafeFunctionTracker/UnsafeInstCounter
+         Name.starts_with("track_unsafe_line_") ||  // DynamicLineCount
+         Name.starts_with("register_unsafe_line") ||// DynamicLineCount
+         Name.starts_with("print_unsafe_");         // DynamicLineCount
 }
+// UNSAFE-RUST END
 
 /// Instruments external function calls within a function.
 /// Uses a three-pass strategy to avoid iterator invalidation.

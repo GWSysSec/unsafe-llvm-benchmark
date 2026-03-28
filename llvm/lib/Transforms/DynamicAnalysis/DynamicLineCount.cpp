@@ -18,22 +18,19 @@
 #include "llvm/Transforms/InstMarker/InstMarker.h"
 #include "llvm/IR/BasicBlock.h"
 #include "llvm/IR/Constants.h"
+#include "llvm/IR/DebugInfoMetadata.h"
 #include "llvm/IR/DerivedTypes.h"
 #include "llvm/IR/Function.h"
-#include "llvm/IR/GlobalVariable.h"
 #include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/InlineAsm.h"
-#include "llvm/IR/Instructions.h"
 #include "llvm/IR/Metadata.h"
 #include "llvm/IR/Module.h"
 #include "llvm/IR/Type.h"
-#include "llvm/Support/Casting.h"
 #include "llvm/Transforms/Utils/ModuleUtils.h"
 #include <cstdlib>
 #include <cstring>
 #include <set>
 #include <string>
-#include <vector>
 
 using namespace llvm;
 
@@ -100,57 +97,95 @@ static bool shouldInstrumentFunction(const Function &F) {
          Name != "unsafe_lines_module_dtor";
 }
 
-/// \brief Collect unsafe lines and instrument execution tracking in a function.
-static bool collectAndInstrumentFunction(Function &F, 
-                                        FunctionCallee TrackExecutionFn,
-                                        std::set<std::string> &allUnsafeLines) {
+/// \brief Instrument execution tracking in a function using markers and !dbg.
+///
+/// Walks marker regions (which survive O2) and checks each instruction's
+/// !dbg location (which also survives O2 with -C debuginfo). If the source
+/// line matches a registered unsafe line, inserts a tracking call.
+/// Deduplicates per-BB to avoid excessive overhead from multiple instructions
+/// mapping to the same source line.
+// UNSAFE-RUST BEGIN
+static bool instrumentFunction(Function &F,
+                               FunctionCallee TrackExecutionFn,
+                               const std::set<std::string> &registeredLines) {
   Module &M = *F.getParent();
   LLVMContext &Ctx = F.getContext();
   bool Modified = false;
 
   for (BasicBlock &BB : F) {
     bool insideUnsafeRegion = false;
-    
+    std::set<std::string> trackedInBB; // deduplicate per-BB
+
     for (Instruction &I : BB) {
       bool isBegin = false, isEnd = false;
-      
-      // Check for unsafe region markers
+
       if (isMarkerInstruction(I, isBegin, isEnd)) {
-        if (isBegin) insideUnsafeRegion = true;
-        else if (isEnd) insideUnsafeRegion = false;
-        continue;
-      }
-      
-      // Process unsafe instructions
-      if (insideUnsafeRegion && I.getMetadata("unsafe_inst")) {
-        if (MDNode *LineInfoMD = I.getMetadata("unsafe_line_info")) {
-          if (LineInfoMD->getNumOperands() >= 2) {
-            if (auto *LineConst = dyn_cast<ConstantAsMetadata>(LineInfoMD->getOperand(0))) {
-              if (auto *FileStr = dyn_cast<MDString>(LineInfoMD->getOperand(1))) {
-                unsigned Line = LineConst->getValue()->getUniqueInteger().getZExtValue();
-                std::string File = FileStr->getString().str();
-                std::string LineKey = File + ":" + std::to_string(Line);
-                
-                // Add to global collection for compile-time registration
-                allUnsafeLines.insert(LineKey);
-                
-                // Insert runtime execution tracking
-                IRBuilder<> Builder(&I);
-                Value *LineArg = ConstantInt::get(Type::getInt64Ty(Ctx), Line);
-                Value *FileArg = createGlobalString(M, Builder, File);
-                Builder.CreateCall(TrackExecutionFn, {LineArg, FileArg});
-                
-                Modified = true;
+        if (isBegin) {
+          insideUnsafeRegion = true;
+
+          // At O2, the optimizer may remove all instructions between markers
+          // (empty marker pairs), but the marker itself carries a !dbg location
+          // from the original unsafe code. Use it for tracking.
+          if (const DILocation *Loc = I.getDebugLoc()) {
+            unsigned Line = Loc->getLine();
+            StringRef File = Loc->getFilename();
+            if (Line != 0 && !File.empty()) {
+              std::string LineKey = File.str() + ":" + std::to_string(Line);
+              if (registeredLines.count(LineKey) &&
+                  trackedInBB.insert(LineKey).second) {
+                // Insert tracking call after the marker_begin
+                Instruction *Next = I.getNextNonDebugInstruction();
+                if (Next) {
+                  IRBuilder<> Builder(Next);
+                  Value *LineArg =
+                      ConstantInt::get(Type::getInt64Ty(Ctx), Line);
+                  Value *FileArg = createGlobalString(M, Builder, File);
+                  Builder.CreateCall(TrackExecutionFn, {LineArg, FileArg});
+                  Modified = true;
+                }
               }
             }
           }
+        } else if (isEnd) {
+          insideUnsafeRegion = false;
         }
+        continue;
       }
+
+      if (!insideUnsafeRegion)
+        continue;
+
+      // Use standard !dbg location (survives O2 with -C debuginfo)
+      const DILocation *Loc = I.getDebugLoc();
+      if (!Loc)
+        continue;
+
+      unsigned Line = Loc->getLine();
+      StringRef File = Loc->getFilename();
+      if (Line == 0 || File.empty())
+        continue;
+
+      std::string LineKey = File.str() + ":" + std::to_string(Line);
+
+      // Only track lines that were registered as unsafe by InstMarker
+      if (!registeredLines.count(LineKey))
+        continue;
+
+      // Deduplicate: one tracking call per unique line per BB
+      if (!trackedInBB.insert(LineKey).second)
+        continue;
+
+      IRBuilder<> Builder(&I);
+      Value *LineArg = ConstantInt::get(Type::getInt64Ty(Ctx), Line);
+      Value *FileArg = createGlobalString(M, Builder, File);
+      Builder.CreateCall(TrackExecutionFn, {LineArg, FileArg});
+      Modified = true;
     }
   }
-  
+
   return Modified;
 }
+// UNSAFE-RUST END
 
 /// \brief Create a module constructor that registers all unsafe lines at startup.
 static void createModuleConstructor(Module &M,
@@ -205,37 +240,57 @@ static void createModuleDestructor(Module &M, FunctionCallee PrintStatsFn) {
 
 } // anonymous namespace
 
+// UNSAFE-RUST BEGIN
 PreservedAnalyses DynamicLineCountPass::run(Module &M, ModuleAnalysisManager &AM) {
   if (!isPrimaryPackage())
     return PreservedAnalyses::all();
 
-  // Use std::set for deterministic ordering
-  std::set<std::string> allUnsafeLines;
-  bool Modified = false;
-  
+  // Phase 1: Read registered unsafe lines from NamedMDNode.
+  // InstMarker populates this pre-optimization; it survives O2 unlike
+  // instruction-level unsafe_line_info metadata.
+  std::set<std::string> registeredLines;
+  if (NamedMDNode *UnsafeLinesMD =
+          M.getNamedMetadata(UNSAFE_SOURCE_LINES_MD)) {
+    for (unsigned i = 0; i < UnsafeLinesMD->getNumOperands(); i++) {
+      MDNode *Entry = UnsafeLinesMD->getOperand(i);
+      if (Entry->getNumOperands() >= 2) {
+        auto *LineConst = dyn_cast<ConstantAsMetadata>(Entry->getOperand(0));
+        auto *FileStr = dyn_cast<MDString>(Entry->getOperand(1));
+        if (LineConst && FileStr) {
+          unsigned Line =
+              LineConst->getValue()->getUniqueInteger().getZExtValue();
+          std::string LineKey =
+              FileStr->getString().str() + ":" + std::to_string(Line);
+          registeredLines.insert(LineKey);
+        }
+      }
+    }
+  }
+
+  if (registeredLines.empty())
+    return PreservedAnalyses::all();
+
   // Setup runtime functions
   FunctionCallee RegisterLineFn, TrackExecutionFn, PrintStatsFn;
   setupRuntimeFunctions(M, RegisterLineFn, TrackExecutionFn, PrintStatsFn);
-  
-  // Phase 1: Collect all unsafe lines across ALL functions
-  // and instrument execution tracking
+
+  // Phase 2: Create module constructor to register all unsafe lines at startup
+  createModuleConstructor(M, registeredLines, RegisterLineFn);
+  bool Modified = true;
+
+  // Phase 3: Instrument execution tracking using markers + !dbg locations.
+  // At O2, markers survive (inline asm with hasSideEffects) and !dbg
+  // locations survive (with -C debuginfo). We match !dbg lines against
+  // the registered set to only track genuinely unsafe lines.
   for (Function &F : M) {
     if (shouldInstrumentFunction(F)) {
-      Modified |= collectAndInstrumentFunction(F, TrackExecutionFn, allUnsafeLines);
+      Modified |= instrumentFunction(F, TrackExecutionFn, registeredLines);
     }
   }
-  
-  // Phase 2: Create module constructor to register all lines at program startup
-  // This ensures all lines are registered BEFORE any execution
-  if (!allUnsafeLines.empty()) {
-    createModuleConstructor(M, allUnsafeLines, RegisterLineFn);
-    Modified = true;
-  }
-  
-  // Phase 3: Create module destructor to print stats at program exit
-  if (Modified) {
-    createModuleDestructor(M, PrintStatsFn);
-  }
-  
+
+  // Phase 4: Create module destructor to print stats at program exit
+  createModuleDestructor(M, PrintStatsFn);
+
   return Modified ? PreservedAnalyses::none() : PreservedAnalyses::all();
 }
+// UNSAFE-RUST END

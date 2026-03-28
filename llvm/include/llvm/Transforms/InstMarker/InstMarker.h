@@ -25,6 +25,12 @@ class StringRef;
 extern const char *UNSAFE_MARKER_BEGIN;
 extern const char *UNSAFE_MARKER_END;
 
+/// Name of the module-level NamedMDNode that stores all unsafe source lines.
+/// Populated by InstMarker (pre-optimization), consumed by DynamicLineCount
+/// (post-optimization). Unlike instruction-level metadata, NamedMDNodes survive
+/// LLVM optimization passes.
+extern const char *UNSAFE_SOURCE_LINES_MD;
+
 /// \brief Pass that marks unsafe code blocks with inline assembly markers.
 ///
 /// This pass identifies instructions tagged with "unsafe_inst" metadata and
