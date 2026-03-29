@@ -160,7 +160,6 @@ PreservedAnalyses CpuCycleCountPass::run(Module &M, ModuleAnalysisManager &AM) {
   if (!isPrimaryPackage())
     return PreservedAnalyses::all();
 
-  auto &FAM = AM.getResult<FunctionAnalysisManagerModuleProxy>(M).getManager();
   // Setup runtime function declarations
   FunctionCallee RecordStartFn, StartMeasureFn, EndMeasureFn, PrintStatsFn;
   setupRuntimeFunctions(M, RecordStartFn, StartMeasureFn, EndMeasureFn, PrintStatsFn);
