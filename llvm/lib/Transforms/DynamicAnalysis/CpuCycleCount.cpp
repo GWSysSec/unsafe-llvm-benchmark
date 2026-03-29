@@ -18,6 +18,7 @@
 #include "llvm/IR/InlineAsm.h"
 #include "llvm/IR/Module.h"
 #include "llvm/Transforms/InstMarker/InstMarker.h"
+#include "llvm/IR/DebugInfoMetadata.h"
 #include "llvm/Transforms/Utils/ModuleUtils.h"
 #include <cstdlib>
 #include <cstring>
@@ -36,6 +37,21 @@ static bool isPrimaryPackage() {
   const char *P = getenv("CARGO_PRIMARY_PACKAGE");
   return P && strcmp(P, "1") == 0;
 }
+
+// UNSAFE-RUST BEGIN
+/// Get a debug location for instrumentation calls (ThinLTO compatibility).
+static DebugLoc getInstrumentationDebugLoc(Instruction *InsertBefore) {
+  if (DebugLoc DL = InsertBefore->getDebugLoc())
+    return DL;
+  for (Instruction &I : *InsertBefore->getParent()) {
+    if (DebugLoc DL = I.getDebugLoc())
+      return DL;
+  }
+  if (DISubprogram *SP = InsertBefore->getFunction()->getSubprogram())
+    return DILocation::get(SP->getContext(), 0, 0, SP);
+  return DebugLoc();
+}
+// UNSAFE-RUST END
 
 /// Instruments unsafe blocks within a function to measure CPU cycles.
 /// Uses a three-pass strategy to avoid iterator invalidation:
@@ -80,11 +96,13 @@ bool instrumentUnsafeBlocks(Function &F, FunctionCallee StartFn,
   for (auto [BeginMarker, EndMarker] : InstrumentationPairs) {
     IRBuilder<> BeginBuilder(BeginMarker);
     BeginBuilder.CreateFence(AtomicOrdering::SequentiallyConsistent);
-    Value *StartCycleValue = BeginBuilder.CreateCall(StartFn);
+    auto *StartCall = BeginBuilder.CreateCall(StartFn);
+    StartCall->setDebugLoc(getInstrumentationDebugLoc(BeginMarker));
 
     IRBuilder<> EndBuilder(EndMarker);
     EndBuilder.CreateFence(AtomicOrdering::SequentiallyConsistent);
-    EndBuilder.CreateCall(EndFn, {StartCycleValue});
+    auto *EndCall = EndBuilder.CreateCall(EndFn, {StartCall});
+    EndCall->setDebugLoc(getInstrumentationDebugLoc(EndMarker));
   }
 
   // Third pass: safely remove all markers after instrumentation

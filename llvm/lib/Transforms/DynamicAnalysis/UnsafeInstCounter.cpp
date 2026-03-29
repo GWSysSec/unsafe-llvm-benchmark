@@ -16,6 +16,7 @@
 #include "llvm/IR/InlineAsm.h"
 #include "llvm/IR/Instructions.h"
 #include "llvm/IR/IntrinsicInst.h"
+#include "llvm/IR/DebugInfoMetadata.h"
 #include "llvm/IR/Module.h"
 #include <cstdlib>
 #include <cstring>
@@ -74,6 +75,25 @@ static bool isAnalysisRuntimeCall(const Instruction &I) {
          Name.starts_with("cpu_cycle_") ||          // CpuCycleCount
          Name.starts_with("record_") ||             // CpuCycleCount
          Name.starts_with("external_call_");        // ExternalCallTracker
+}
+// UNSAFE-RUST END
+
+// UNSAFE-RUST BEGIN
+/// Get a debug location for instrumentation calls inserted by this pass.
+/// ThinLTO post-link requires all calls in functions with debug info to carry
+/// a !dbg location. Falls back to a synthetic line-0 location from the
+/// function's DISubprogram (the standard LLVM pattern for compiler-generated
+/// instrumentation, matching AddressSanitizer/MemorySanitizer).
+static DebugLoc getInstrumentationDebugLoc(Instruction *InsertBefore) {
+  if (DebugLoc DL = InsertBefore->getDebugLoc())
+    return DL;
+  for (Instruction &I : *InsertBefore->getParent()) {
+    if (DebugLoc DL = I.getDebugLoc())
+      return DL;
+  }
+  if (DISubprogram *SP = InsertBefore->getFunction()->getSubprogram())
+    return DILocation::get(SP->getContext(), 0, 0, SP);
+  return DebugLoc();
 }
 // UNSAFE-RUST END
 
@@ -243,8 +263,9 @@ PreservedAnalyses UnsafeInstCounterPass::run(Function &F,
     if (!counts.hasUnsafeInstructions()) {
       // For safe blocks, we still need total instruction count
       // Create a simplified call with all unsafe counts as zero
-      IRBuilder<> Builder(BB.getTerminator());
-      Builder.CreateCall(RecordBlockFn, {
+      Instruction *Term = BB.getTerminator();
+      IRBuilder<> Builder(Term);
+      auto *Call = Builder.CreateCall(RecordBlockFn, {
         ConstantInt::get(Type::getInt32Ty(F.getContext()), funcId),
         ConstantInt::get(Type::getInt32Ty(F.getContext()), counts.totalInsts),
         ConstantInt::get(Type::getInt32Ty(F.getContext()), 0),
@@ -255,10 +276,12 @@ PreservedAnalyses UnsafeInstCounterPass::run(Function &F,
         ConstantInt::get(Type::getInt16Ty(F.getContext()), 0),
         ConstantInt::get(Type::getInt16Ty(F.getContext()), 0)
       });
+      Call->setDebugLoc(getInstrumentationDebugLoc(Term));
     } else {
       // Instrument block with unsafe counts
-      IRBuilder<> Builder(BB.getTerminator());
-      Builder.CreateCall(RecordBlockFn, {
+      Instruction *Term = BB.getTerminator();
+      IRBuilder<> Builder(Term);
+      auto *Call = Builder.CreateCall(RecordBlockFn, {
         ConstantInt::get(Type::getInt32Ty(F.getContext()), funcId),
         ConstantInt::get(Type::getInt32Ty(F.getContext()), counts.totalInsts),
         ConstantInt::get(Type::getInt32Ty(F.getContext()), counts.totalUnsafeInsts),
@@ -269,6 +292,7 @@ PreservedAnalyses UnsafeInstCounterPass::run(Function &F,
         ConstantInt::get(Type::getInt16Ty(F.getContext()), counts.unsafeCounts[UNSAFE_GEP]),
         ConstantInt::get(Type::getInt16Ty(F.getContext()), counts.unsafeCounts[UNSAFE_OTHER])
       });
+      Call->setDebugLoc(getInstrumentationDebugLoc(Term));
     }
     
     modified = true;

@@ -1707,6 +1707,52 @@ PassBuilder::buildThinLTOPreLinkDefaultPipeline(OptimizationLevel Level) {
 
   ModulePassManager MPM;
 
+  // UNSAFE-RUST BEGIN
+  // All custom passes run in pre-link so that ctor/dtor functions and
+  // @llvm.global.ctors entries enter the ThinLTO module summary and
+  // survive internalization. InstMarker runs first to place markers,
+  // then analysis passes read them immediately.
+  if (EnableInstMarkerPass) {
+    FunctionPassManager InstFPM;
+    InstFPM.addPass(InstMarkerPass());
+    MPM.addPass(createModuleToFunctionPassAdaptor(std::move(InstFPM)));
+  }
+
+  if (EnableUnsafeRustDummyPass) {
+    FunctionPassManager DummyFPM;
+    DummyFPM.addPass(UnsafeRustDummyPass());
+    MPM.addPass(createModuleToFunctionPassAdaptor(std::move(DummyFPM)));
+  }
+
+  if (EnableHeapTrackerPass) {
+    FunctionPassManager HeapFPM;
+    HeapFPM.addPass(HeapTrackerPass());
+    MPM.addPass(createModuleToFunctionPassAdaptor(std::move(HeapFPM)));
+  }
+
+  if (EnableUnsafeFunctionTrackerPass) {
+    MPM.addPass(UnsafeFunctionTrackerPass());
+  }
+
+  if (EnableUnsafeInstCounterPass) {
+    FunctionPassManager UnsafeFPM;
+    UnsafeFPM.addPass(UnsafeInstCounterPass());
+    MPM.addPass(createModuleToFunctionPassAdaptor(std::move(UnsafeFPM)));
+  }
+
+  if (EnableDynamicLineCountPass) {
+    MPM.addPass(DynamicLineCountPass());
+  }
+
+  if (EnableCpuCycleCountPass) {
+    MPM.addPass(CpuCycleCountPass());
+  }
+
+  if (EnableExternalCallTrackerPass) {
+    MPM.addPass(ExternalCallTrackerPass());
+  }
+  // UNSAFE-RUST END
+
   // Convert @llvm.global.annotations to !annotation metadata.
   MPM.addPass(Annotation2MetadataPass());
 
@@ -1801,6 +1847,9 @@ ModulePassManager PassBuilder::buildThinLTODefaultPipeline(
   // Now add the optimization pipeline.
   MPM.addPass(buildModuleOptimizationPipeline(
       Level, ThinOrFullLTOPhase::ThinLTOPostLink));
+
+  // UNSAFE-RUST: All analysis passes moved to pre-link (buildThinLTOPreLinkDefaultPipeline)
+  // so that ctor/dtor functions survive ThinLTO internalization.
 
   // Emit annotation remarks.
   addAnnotationRemarksPass(MPM);

@@ -27,6 +27,7 @@
 #include "llvm/IR/Module.h"
 #include "llvm/IR/Type.h"
 #include "llvm/Support/Casting.h"
+#include "llvm/IR/DebugInfoMetadata.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Transforms/InstMarker/InstMarker.h"
 #include <cstdlib>
@@ -40,6 +41,21 @@ const char *llvm::DYN_MEM_ACCESS_FN = "dyn_mem_access";
 const char *llvm::DYN_UNSAFE_MEM_ACCESS_FN = "dyn_unsafe_mem_access";
 
 namespace {
+
+// UNSAFE-RUST BEGIN
+/// Get a debug location for instrumentation calls (ThinLTO compatibility).
+static DebugLoc getInstrumentationDebugLoc(Instruction *InsertBefore) {
+  if (DebugLoc DL = InsertBefore->getDebugLoc())
+    return DL;
+  for (Instruction &I : *InsertBefore->getParent()) {
+    if (DebugLoc DL = I.getDebugLoc())
+      return DL;
+  }
+  if (DISubprogram *SP = InsertBefore->getFunction()->getSubprogram())
+    return DILocation::get(SP->getContext(), 0, 0, SP);
+  return DebugLoc();
+}
+// UNSAFE-RUST END
 
 static bool isPrimaryPackage() {
   const char *P = getenv("CARGO_PRIMARY_PACKAGE");
@@ -70,7 +86,8 @@ void instrumentMemInst(Function &F, FunctionCallee DynMemAccessFn) {
       Value *DestAddr = isa<LoadInst>(MemInst) ?
           cast<LoadInst>(MemInst)->getPointerOperand() :
           cast<StoreInst>(MemInst)->getPointerOperand();
-      Builder.CreateCall(DynMemAccessFn, DestAddr);
+      auto *Call = Builder.CreateCall(DynMemAccessFn, DestAddr);
+      Call->setDebugLoc(getInstrumentationDebugLoc(MemInst));
     }
   }
 }
@@ -174,7 +191,8 @@ bool instrumentUnsafeMemInst(Function &F, FunctionCallee DynUnsafeMemAccessFn,
                              : cast<StoreInst>(MemInst)->getPointerOperand();
     Value *IsLoadVal = ConstantInt::get(
         Type::getInt1Ty(F.getContext()), IsLoad);
-    Builder.CreateCall(DynUnsafeMemAccessFn, {DestAddr, IsLoadVal});
+    auto *Call = Builder.CreateCall(DynUnsafeMemAccessFn, {DestAddr, IsLoadVal});
+    Call->setDebugLoc(getInstrumentationDebugLoc(MemInst));
   }
 
   return true;

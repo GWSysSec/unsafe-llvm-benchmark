@@ -14,6 +14,7 @@
 
 #include "llvm/Transforms/DynamicAnalysis/ExternalCallTracker.h"
 #include "llvm/ADT/SmallVector.h"
+#include "llvm/IR/DebugInfoMetadata.h"
 #include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/Module.h"
 #include <cstdlib>
@@ -26,6 +27,21 @@ const char *llvm::EXTERNAL_CALL_START_FN = "external_call_start";
 const char *llvm::EXTERNAL_CALL_END_FN = "external_call_end";
 
 namespace {
+
+// UNSAFE-RUST BEGIN
+/// Get a debug location for instrumentation calls (ThinLTO compatibility).
+static DebugLoc getInstrumentationDebugLoc(Instruction *InsertBefore) {
+  if (DebugLoc DL = InsertBefore->getDebugLoc())
+    return DL;
+  for (Instruction &I : *InsertBefore->getParent()) {
+    if (DebugLoc DL = I.getDebugLoc())
+      return DL;
+  }
+  if (DISubprogram *SP = InsertBefore->getFunction()->getSubprogram())
+    return DILocation::get(SP->getContext(), 0, 0, SP);
+  return DebugLoc();
+}
+// UNSAFE-RUST END
 
 static bool isPrimaryPackage() {
   const char *P = getenv("CARGO_PRIMARY_PACKAGE");
@@ -88,14 +104,16 @@ bool instrumentExternalCalls(Function &F, FunctionCallee ExtStartFn,
     // Insert timer start before the call
     IRBuilder<> Builder(I);
     Builder.CreateFence(AtomicOrdering::SequentiallyConsistent);
-    Value *StartTime = Builder.CreateCall(ExtStartFn);
+    auto *StartCall = Builder.CreateCall(ExtStartFn);
+    StartCall->setDebugLoc(getInstrumentationDebugLoc(I));
 
     // Insert timer end after the call
     Instruction *NextInst = I->getNextNonDebugInstruction();
     if (NextInst) {
       IRBuilder<> EndBuilder(NextInst);
       EndBuilder.CreateFence(AtomicOrdering::SequentiallyConsistent);
-      EndBuilder.CreateCall(ExtEndFn, {StartTime});
+      auto *EndCall = EndBuilder.CreateCall(ExtEndFn, {StartCall});
+      EndCall->setDebugLoc(getInstrumentationDebugLoc(NextInst));
       Modified = true;
     }
     // Note: Calls at block end without a next instruction are skipped to avoid

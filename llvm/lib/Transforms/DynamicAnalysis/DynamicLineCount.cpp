@@ -40,6 +40,21 @@ const char *PRINT_UNSAFE_COVERAGE_STATS_FN = "print_unsafe_coverage_stats";
 
 namespace {
 
+// UNSAFE-RUST BEGIN
+/// Get a debug location for instrumentation calls (ThinLTO compatibility).
+static DebugLoc getInstrumentationDebugLoc(Instruction *InsertBefore) {
+  if (DebugLoc DL = InsertBefore->getDebugLoc())
+    return DL;
+  for (Instruction &I : *InsertBefore->getParent()) {
+    if (DebugLoc DL = I.getDebugLoc())
+      return DL;
+  }
+  if (DISubprogram *SP = InsertBefore->getFunction()->getSubprogram())
+    return DILocation::get(SP->getContext(), 0, 0, SP);
+  return DebugLoc();
+}
+// UNSAFE-RUST END
+
 static bool isPrimaryPackage() {
   const char *P = getenv("CARGO_PRIMARY_PACKAGE");
   return P && strcmp(P, "1") == 0;
@@ -140,7 +155,8 @@ static bool instrumentFunction(Function &F,
                   Value *LineArg =
                       ConstantInt::get(Type::getInt64Ty(Ctx), Line);
                   Value *FileArg = createGlobalString(M, Builder, File);
-                  Builder.CreateCall(TrackExecutionFn, {LineArg, FileArg});
+                  auto *Call = Builder.CreateCall(TrackExecutionFn, {LineArg, FileArg});
+                  Call->setDebugLoc(getInstrumentationDebugLoc(Next));
                   Modified = true;
                 }
               }
@@ -178,7 +194,8 @@ static bool instrumentFunction(Function &F,
       IRBuilder<> Builder(&I);
       Value *LineArg = ConstantInt::get(Type::getInt64Ty(Ctx), Line);
       Value *FileArg = createGlobalString(M, Builder, File);
-      Builder.CreateCall(TrackExecutionFn, {LineArg, FileArg});
+      auto *Call = Builder.CreateCall(TrackExecutionFn, {LineArg, FileArg});
+      Call->setDebugLoc(getInstrumentationDebugLoc(&I));
       Modified = true;
     }
   }

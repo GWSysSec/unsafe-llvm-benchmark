@@ -16,6 +16,7 @@
 #include "llvm/IR/InlineAsm.h"
 #include "llvm/IR/Instructions.h"
 #include "llvm/IR/Module.h"
+#include "llvm/IR/DebugInfoMetadata.h"
 #include "llvm/IR/Type.h"
 #include "llvm/Transforms/Utils/ModuleUtils.h"
 #include <vector>
@@ -50,6 +51,21 @@ static bool isMarkerInstruction(const Instruction &I) {
 static bool hasUnsafeMetadata(const Instruction &I) {
   return I.getMetadata("unsafe_inst") != nullptr;
 }
+
+// UNSAFE-RUST BEGIN
+/// Get a debug location for instrumentation calls (ThinLTO compatibility).
+static DebugLoc getInstrumentationDebugLoc(Instruction *InsertBefore) {
+  if (DebugLoc DL = InsertBefore->getDebugLoc())
+    return DL;
+  for (Instruction &I : *InsertBefore->getParent()) {
+    if (DebugLoc DL = I.getDebugLoc())
+      return DL;
+  }
+  if (DISubprogram *SP = InsertBefore->getFunction()->getSubprogram())
+    return DILocation::get(SP->getContext(), 0, 0, SP);
+  return DebugLoc();
+}
+// UNSAFE-RUST END
 
 /// \brief Check if function should be instrumented
 static bool shouldInstrumentFunction(const Function &F) {
@@ -211,14 +227,16 @@ PreservedAnalyses UnsafeFunctionTrackerPass::run(Module &M, ModuleAnalysisManage
   // Phase 5: Instrument function entries
   for (Function *F : functionsToInstrument) {
     BasicBlock &EntryBB = F->getEntryBlock();
-    IRBuilder<> EntryBuilder(&EntryBB.front());
-    
+    Instruction *InsertPt = &EntryBB.front();
+    IRBuilder<> EntryBuilder(InsertPt);
+
     // Get function ID from metadata
     MDNode *MD = F->getMetadata(FUNCTION_ID_METADATA);
     ConstantAsMetadata *CMD = cast<ConstantAsMetadata>(MD->getOperand(0));
     ConstantInt *IdConst = cast<ConstantInt>(CMD->getValue());
-    
-    EntryBuilder.CreateCall(RecordFunctionFn, {IdConst});
+
+    auto *Call = EntryBuilder.CreateCall(RecordFunctionFn, {IdConst});
+    Call->setDebugLoc(getInstrumentationDebugLoc(InsertPt));
   }
   
   return PreservedAnalyses::none();
