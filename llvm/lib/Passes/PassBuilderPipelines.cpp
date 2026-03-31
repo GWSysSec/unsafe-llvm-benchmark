@@ -1663,12 +1663,15 @@ PassBuilder::buildPerModuleDefaultPipeline(OptimizationLevel Level,
     MPM.addPass(DynamicLineCountPass());
   }
 
-  if (EnableCpuCycleCountPass) {
-    MPM.addPass(CpuCycleCountPass());
-  }
-
+  // ExternalCallTracker reads markers to skip calls inside unsafe regions,
+  // so it must run before CpuCycleCount which removes markers.
   if (EnableExternalCallTrackerPass) {
     MPM.addPass(ExternalCallTrackerPass());
+  }
+
+  // CpuCycleCount must be last: it removes markers after instrumenting them.
+  if (EnableCpuCycleCountPass) {
+    MPM.addPass(CpuCycleCountPass());
   }
   // UNSAFE-RUST END
 
@@ -1744,12 +1747,15 @@ PassBuilder::buildThinLTOPreLinkDefaultPipeline(OptimizationLevel Level) {
     MPM.addPass(DynamicLineCountPass());
   }
 
-  if (EnableCpuCycleCountPass) {
-    MPM.addPass(CpuCycleCountPass());
-  }
-
+  // ExternalCallTracker reads markers to skip calls inside unsafe regions,
+  // so it must run before CpuCycleCount which removes markers.
   if (EnableExternalCallTrackerPass) {
     MPM.addPass(ExternalCallTrackerPass());
+  }
+
+  // CpuCycleCount must be last: it removes markers after instrumenting them.
+  if (EnableCpuCycleCountPass) {
+    MPM.addPass(CpuCycleCountPass());
   }
   // UNSAFE-RUST END
 
@@ -2326,12 +2332,15 @@ ModulePassManager PassBuilder::buildO0DefaultPipeline(OptimizationLevel Level,
     MPM.addPass(DynamicLineCountPass());
   }
 
-  if (EnableCpuCycleCountPass) {
-    MPM.addPass(CpuCycleCountPass());
-  }
-
+  // ExternalCallTracker reads markers to skip calls inside unsafe regions,
+  // so it must run before CpuCycleCount which removes markers.
   if (EnableExternalCallTrackerPass) {
     MPM.addPass(ExternalCallTrackerPass());
+  }
+
+  // CpuCycleCount must be last: it removes markers after instrumenting them.
+  if (EnableCpuCycleCountPass) {
+    MPM.addPass(CpuCycleCountPass());
   }
   // UNSAFE-RUST END
 

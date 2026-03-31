@@ -15,8 +15,10 @@
 #include "llvm/Transforms/DynamicAnalysis/ExternalCallTracker.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/IR/DebugInfoMetadata.h"
+#include "llvm/IR/InlineAsm.h"
 #include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/Module.h"
+#include "llvm/Transforms/InstMarker/InstMarker.h"
 #include <cstdlib>
 #include <cstring>
 
@@ -66,17 +68,45 @@ static bool isRuntimeFunction(StringRef Name) {
 }
 // UNSAFE-RUST END
 
+/// Checks if a CallBase is an InstMarker inline asm marker.
+static bool isMarkerAsm(CallBase *Call, StringRef MarkerStr) {
+  if (auto *IA = dyn_cast<InlineAsm>(Call->getCalledOperand()))
+    return IA->getAsmString() == MarkerStr;
+  return false;
+}
+
 /// Instruments external function calls within a function.
 /// Uses a three-pass strategy to avoid iterator invalidation.
+/// Skips external calls inside unsafe marker regions — those calls are already
+/// measured by CpuCycleCount, and the runtime would no-op them anyway
+/// (IN_UNSAFE > 0). Skipping avoids wasted MFENCE + function call overhead
+/// that would otherwise inflate unsafe cycle measurements.
 bool instrumentExternalCalls(Function &F, FunctionCallee ExtStartFn,
                               FunctionCallee ExtEndFn) {
-  // First pass: collect all external calls to instrument
+  // First pass: collect external calls to instrument, skipping those inside
+  // unsafe marker regions (between marker_begin and marker_end).
   SmallVector<Instruction*, 32> CallsToInstrument;
 
   for (BasicBlock &BB : F) {
+    bool InsideMarkerRegion = false;
+
     for (Instruction &I : BB) {
       auto *Call = dyn_cast<CallBase>(&I);
       if (!Call) continue;
+
+      // Track marker region boundaries
+      if (isMarkerAsm(Call, llvm::UNSAFE_MARKER_BEGIN)) {
+        InsideMarkerRegion = true;
+        continue;
+      }
+      if (isMarkerAsm(Call, llvm::UNSAFE_MARKER_END)) {
+        InsideMarkerRegion = false;
+        continue;
+      }
+
+      // Skip calls inside unsafe marker regions
+      if (InsideMarkerRegion)
+        continue;
 
       Function *CalledFn = Call->getCalledFunction();
       // Check if the called function is external (declaration) and not an intrinsic
