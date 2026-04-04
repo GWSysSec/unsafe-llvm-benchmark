@@ -13,6 +13,7 @@
 //===--------------------------------------------------------------------------------------==//
 
 #include "llvm/Transforms/DynamicAnalysis/CpuCycleCount.h"
+#include "llvm/Transforms/DynamicAnalysis/UnsafeAnalysisUtils.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/InlineAsm.h"
@@ -20,8 +21,6 @@
 #include "llvm/Transforms/InstMarker/InstMarker.h"
 #include "llvm/IR/DebugInfoMetadata.h"
 #include "llvm/Transforms/Utils/ModuleUtils.h"
-#include <cstdlib>
-#include <cstring>
 
 using namespace llvm;
 
@@ -32,26 +31,6 @@ const char *llvm::END_MEASUREMENT_FN = "cpu_cycle_end_measurement";
 const char *llvm::PRINT_STATS_FN = "print_cpu_cycle_stats";
 
 namespace {
-
-static bool isPrimaryPackage() {
-  const char *P = getenv("CARGO_PRIMARY_PACKAGE");
-  return P && strcmp(P, "1") == 0;
-}
-
-// UNSAFE-RUST BEGIN
-/// Get a debug location for instrumentation calls (ThinLTO compatibility).
-static DebugLoc getInstrumentationDebugLoc(Instruction *InsertBefore) {
-  if (DebugLoc DL = InsertBefore->getDebugLoc())
-    return DL;
-  for (Instruction &I : *InsertBefore->getParent()) {
-    if (DebugLoc DL = I.getDebugLoc())
-      return DL;
-  }
-  if (DISubprogram *SP = InsertBefore->getFunction()->getSubprogram())
-    return DILocation::get(SP->getContext(), 0, 0, SP);
-  return DebugLoc();
-}
-// UNSAFE-RUST END
 
 /// Instruments unsafe blocks within a function to measure CPU cycles.
 /// Uses a three-pass strategy to avoid iterator invalidation:

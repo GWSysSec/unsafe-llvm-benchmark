@@ -23,10 +23,20 @@
 #include "llvm/IR/Instructions.h"
 #include "llvm/IR/Metadata.h"
 #include "llvm/IR/Type.h"
+#include "llvm/Support/CommandLine.h"
+#include "llvm/Support/Debug.h"
 #include <cstdlib>
 #include <cstring>
 
+#define DEBUG_TYPE "instmarker"
+
 using namespace llvm;
+
+// UNSAFE-RUST BEGIN
+static cl::opt<bool> ReportMarkerCount(
+    "report-marker-count", cl::init(false), cl::Hidden,
+    cl::desc("Store marker pair count in unsafe_marker_count NamedMDNode"));
+// UNSAFE-RUST END
 
 namespace {
 
@@ -41,8 +51,9 @@ namespace {
 ///
 /// \param F The target function to instrument.
 /// \returns True if the function was modified, false otherwise.
-bool insertUnsafeMarkers(Function &F) {
-  bool Modified = false;
+/// \brief Inserts markers and returns the number of marker pairs inserted.
+unsigned insertUnsafeMarkers(Function &F) {
+  unsigned MarkerPairs = 0;
   Type *VoidTy = Type::getVoidTy(F.getContext());
   InlineAsm *AsmMarkerBegin =
       InlineAsm::get(FunctionType::get(VoidTy, false), UNSAFE_MARKER_BEGIN,
@@ -71,7 +82,7 @@ bool insertUnsafeMarkers(Function &F) {
         IRBuilder<> EndBuilder(&I);
         EndBuilder.CreateCall(AsmMarkerEnd);
 
-        Modified = true;
+        MarkerPairs++;
         inUnsafe = false;
         seqStart = nullptr;
       }
@@ -89,11 +100,11 @@ bool insertUnsafeMarkers(Function &F) {
       IRBuilder<> EndBuilder(BB.getTerminator());
       EndBuilder.CreateCall(AsmMarkerEnd);
 
-      Modified = true;
+      MarkerPairs++;
     }
   }
 
-  return Modified;
+  return MarkerPairs;
 }
 
 } // anonymous namespace
@@ -160,12 +171,39 @@ void InstMarkerPass::createUnsafeLineMetadata(Instruction &I, unsigned Line,
   I.setMetadata("unsafe_line_info", LineInfo);
 }
 
+// UNSAFE-RUST BEGIN
 PreservedAnalyses InstMarkerPass::run(Function &F,
                                       FunctionAnalysisManager &AM) {
   // Capture line information BEFORE inserting markers
   captureUnsafeLineInfo(F);
-  
-  bool Modified = insertUnsafeMarkers(F);
 
-  return Modified ? PreservedAnalyses::none() : PreservedAnalyses::all();
+  unsigned MarkerPairs = insertUnsafeMarkers(F);
+
+  if (MarkerPairs > 0) {
+    // Count unsafe instructions for diagnostics
+    unsigned UnsafeInsts = 0;
+    for (BasicBlock &BB : F)
+      for (Instruction &I : BB)
+        if (I.getMetadata("unsafe_inst"))
+          UnsafeInsts++;
+
+    LLVM_DEBUG(dbgs() << "instmarker: " << F.getName()
+                      << " — " << MarkerPairs << " marker pair(s), "
+                      << UnsafeInsts << " unsafe instruction(s)\n");
+
+    // Store marker count in NamedMDNode when requested
+    if (ReportMarkerCount) {
+      Module *M = F.getParent();
+      NamedMDNode *CountMD =
+          M->getOrInsertNamedMetadata("unsafe_marker_count");
+      LLVMContext &Ctx = F.getContext();
+      Metadata *FnName = MDString::get(Ctx, F.getName());
+      Metadata *Count = ConstantAsMetadata::get(
+          ConstantInt::get(Type::getInt32Ty(Ctx), MarkerPairs));
+      CountMD->addOperand(MDNode::get(Ctx, {FnName, Count}));
+    }
+  }
+
+  return MarkerPairs > 0 ? PreservedAnalyses::none() : PreservedAnalyses::all();
 }
+// UNSAFE-RUST END

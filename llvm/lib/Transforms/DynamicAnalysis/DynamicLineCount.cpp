@@ -15,6 +15,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "llvm/Transforms/DynamicAnalysis/DynamicLineCount.h"
+#include "llvm/Transforms/DynamicAnalysis/UnsafeAnalysisUtils.h"
 #include "llvm/Transforms/InstMarker/InstMarker.h"
 #include "llvm/IR/BasicBlock.h"
 #include "llvm/IR/Constants.h"
@@ -27,8 +28,6 @@
 #include "llvm/IR/Module.h"
 #include "llvm/IR/Type.h"
 #include "llvm/Transforms/Utils/ModuleUtils.h"
-#include <cstdlib>
-#include <cstring>
 #include <set>
 #include <string>
 
@@ -39,26 +38,6 @@ const char *TRACK_UNSAFE_LINE_EXECUTION_FN = "track_unsafe_line_execution";
 const char *PRINT_UNSAFE_COVERAGE_STATS_FN = "print_unsafe_coverage_stats";
 
 namespace {
-
-// UNSAFE-RUST BEGIN
-/// Get a debug location for instrumentation calls (ThinLTO compatibility).
-static DebugLoc getInstrumentationDebugLoc(Instruction *InsertBefore) {
-  if (DebugLoc DL = InsertBefore->getDebugLoc())
-    return DL;
-  for (Instruction &I : *InsertBefore->getParent()) {
-    if (DebugLoc DL = I.getDebugLoc())
-      return DL;
-  }
-  if (DISubprogram *SP = InsertBefore->getFunction()->getSubprogram())
-    return DILocation::get(SP->getContext(), 0, 0, SP);
-  return DebugLoc();
-}
-// UNSAFE-RUST END
-
-static bool isPrimaryPackage() {
-  const char *P = getenv("CARGO_PRIMARY_PACKAGE");
-  return P && strcmp(P, "1") == 0;
-}
 
 /// \brief Setup runtime functions for unsafe line coverage tracking.
 static void setupRuntimeFunctions(Module &M,
@@ -86,19 +65,6 @@ static void setupRuntimeFunctions(Module &M,
 /// \brief Creates a global string constant for the given string value.
 static Value *createGlobalString(Module &M, IRBuilder<> &Builder, StringRef Str) {
   return Builder.CreateGlobalStringPtr(Str);
-}
-
-/// \brief Return true if instruction is a marker, and set isBegin/isEnd accordingly.
-static bool isMarkerInstruction(const Instruction &I, bool &isBegin, bool &isEnd) {
-  if (const CallBase *CallInst = dyn_cast<CallBase>(&I)) {
-    if (const llvm::InlineAsm *InlineAsm = 
-        dyn_cast<llvm::InlineAsm>(CallInst->getCalledOperand()->stripPointerCasts())) {
-      StringRef AsmStr = InlineAsm->getAsmString();
-      if (AsmStr == llvm::UNSAFE_MARKER_BEGIN) { isBegin = true; return true; }
-      if (AsmStr == llvm::UNSAFE_MARKER_END)   { isEnd = true; return true; }
-    }
-  }
-  return false;
 }
 
 /// \brief Return true if function should be instrumented.

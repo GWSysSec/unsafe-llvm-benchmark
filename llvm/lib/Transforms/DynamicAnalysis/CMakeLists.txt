@@ -1,4 +1,5 @@
 add_llvm_component_library(LLVMDynamicAnalysis
+  UnsafeAnalysisUtils.cpp
   HeapTracker.cpp
   DynamicLineCount.cpp
   CpuCycleCount.cpp

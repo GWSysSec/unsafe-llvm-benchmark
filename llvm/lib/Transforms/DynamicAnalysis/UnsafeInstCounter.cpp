@@ -7,6 +7,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "llvm/Transforms/DynamicAnalysis/UnsafeInstCounter.h"
+#include "llvm/Transforms/DynamicAnalysis/UnsafeAnalysisUtils.h"
 #include "llvm/Transforms/DynamicAnalysis/UnsafeFunctionTracker.h"
 #include "llvm/Transforms/InstMarker/InstMarker.h"
 #include "llvm/IR/BasicBlock.h"
@@ -18,84 +19,12 @@
 #include "llvm/IR/IntrinsicInst.h"
 #include "llvm/IR/DebugInfoMetadata.h"
 #include "llvm/IR/Module.h"
-#include <cstdlib>
-#include <cstring>
 
 using namespace llvm;
 
 namespace {
 
-static bool isPrimaryPackage() {
-  const char *P = getenv("CARGO_PRIMARY_PACKAGE");
-  return P && strcmp(P, "1") == 0;
-}
-
 constexpr const char *RECORD_BLOCK_FN = "__unsafe_record_block";
-
-/// \brief Check if instruction is a marker
-static bool isMarkerInstruction(const Instruction &I, bool &isBegin, bool &isEnd) {
-  isBegin = false;
-  isEnd = false;
-  
-  if (auto *CI = dyn_cast<CallBase>(&I)) {
-    if (auto *IA = dyn_cast<InlineAsm>(CI->getCalledOperand()->stripPointerCasts())) {
-      StringRef AsmStr = IA->getAsmString();
-      if (AsmStr == UNSAFE_MARKER_BEGIN) {
-        isBegin = true;
-        return true;
-      }
-      if (AsmStr == UNSAFE_MARKER_END) {
-        isEnd = true;
-        return true;
-      }
-    }
-  }
-  return false;
-}
-
-/// \brief Check if a call targets an analysis runtime function inserted by
-/// earlier passes (HeapTracker, DynamicLineCount, CpuCycleCount, etc.).
-/// These must not be counted as user instructions.
-// UNSAFE-RUST BEGIN
-static bool isAnalysisRuntimeCall(const Instruction &I) {
-  auto *CB = dyn_cast<CallBase>(&I);
-  if (!CB) return false;
-
-  Function *Callee = CB->getCalledFunction();
-  if (!Callee) return false;
-
-  StringRef Name = Callee->getName();
-  return Name.starts_with("dyn_mem_") ||           // HeapTracker
-         Name.starts_with("dyn_unsafe_mem_") ||     // HeapTracker
-         Name.starts_with("__unsafe_") ||           // UnsafeFunctionTracker/UnsafeInstCounter
-         Name.starts_with("track_unsafe_line_") ||  // DynamicLineCount
-         Name.starts_with("register_unsafe_line") ||// DynamicLineCount
-         Name.starts_with("print_unsafe_") ||       // DynamicLineCount
-         Name.starts_with("print_cpu_cycle_") ||    // CpuCycleCount
-         Name.starts_with("cpu_cycle_") ||          // CpuCycleCount
-         Name.starts_with("record_") ||             // CpuCycleCount
-         Name.starts_with("external_call_");        // ExternalCallTracker
-}
-// UNSAFE-RUST END
-
-// UNSAFE-RUST BEGIN
-/// Get a debug location for instrumentation calls inserted by this pass.
-/// ThinLTO post-link requires all calls in functions with debug info to carry
-/// a !dbg location. Falls back to a synthetic line-0 location from the
-/// function's DISubprogram (the standard LLVM pattern for compiler-generated
-/// instrumentation, matching AddressSanitizer/MemorySanitizer).
-static DebugLoc getInstrumentationDebugLoc(Instruction *InsertBefore) {
-  if (DebugLoc DL = InsertBefore->getDebugLoc())
-    return DL;
-  for (Instruction &I : *InsertBefore->getParent()) {
-    if (DebugLoc DL = I.getDebugLoc())
-      return DL;
-  }
-  if (DISubprogram *SP = InsertBefore->getFunction()->getSubprogram())
-    return DILocation::get(SP->getContext(), 0, 0, SP);
-  return DebugLoc();
-}
-// UNSAFE-RUST END
 
 /// \brief Check if function should be instrumented
 static bool shouldInstrumentFunction(const Function &F) {
@@ -195,14 +124,6 @@ UnsafeInstCounterPass::analyzeBasicBlock(BasicBlock &BB) {
       }
       continue; // Don't count markers
     }
-
-    // UNSAFE-RUST BEGIN
-    // Skip calls to analysis runtime functions inserted by earlier passes
-    // (e.g., HeapTracker's dyn_mem_access). Without this, pass interaction
-    // inflates unsafe instruction counts.
-    if (isAnalysisRuntimeCall(I))
-      continue;
-    // UNSAFE-RUST END
 
     // Count all instructions
     counts.totalInsts++;

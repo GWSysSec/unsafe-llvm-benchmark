@@ -7,6 +7,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "llvm/Transforms/DynamicAnalysis/UnsafeFunctionTracker.h"
+#include "llvm/Transforms/DynamicAnalysis/UnsafeAnalysisUtils.h"
 #include "llvm/Transforms/InstMarker/InstMarker.h"
 #include "llvm/IR/Constants.h"
 #include "llvm/IR/DerivedTypes.h"
@@ -20,52 +21,19 @@
 #include "llvm/IR/Type.h"
 #include "llvm/Transforms/Utils/ModuleUtils.h"
 #include <vector>
-#include <cstdlib>
-#include <cstring>
 
 using namespace llvm;
 
 namespace {
 
-static bool isPrimaryPackage() {
-  const char *P = getenv("CARGO_PRIMARY_PACKAGE");
-  return P && strcmp(P, "1") == 0;
-}
-
 constexpr const char *INIT_METADATA_FN = "__unsafe_init_metadata";
 constexpr const char *RECORD_FUNCTION_FN = "__unsafe_record_function";
 constexpr const char *DUMP_STATS_FN = "__unsafe_dump_stats";
-
-/// \brief Check if instruction is a marker
-static bool isMarkerInstruction(const Instruction &I) {
-  if (auto *CI = dyn_cast<CallBase>(&I)) {
-    if (auto *IA = dyn_cast<InlineAsm>(CI->getCalledOperand()->stripPointerCasts())) {
-      StringRef AsmStr = IA->getAsmString();
-      return AsmStr == UNSAFE_MARKER_BEGIN || AsmStr == UNSAFE_MARKER_END;
-    }
-  }
-  return false;
-}
 
 /// \brief Check if instruction has unsafe metadata
 static bool hasUnsafeMetadata(const Instruction &I) {
   return I.getMetadata("unsafe_inst") != nullptr;
 }
-
-// UNSAFE-RUST BEGIN
-/// Get a debug location for instrumentation calls (ThinLTO compatibility).
-static DebugLoc getInstrumentationDebugLoc(Instruction *InsertBefore) {
-  if (DebugLoc DL = InsertBefore->getDebugLoc())
-    return DL;
-  for (Instruction &I : *InsertBefore->getParent()) {
-    if (DebugLoc DL = I.getDebugLoc())
-      return DL;
-  }
-  if (DISubprogram *SP = InsertBefore->getFunction()->getSubprogram())
-    return DILocation::get(SP->getContext(), 0, 0, SP);
-  return DebugLoc();
-}
-// UNSAFE-RUST END
 
 /// \brief Check if function should be instrumented
 static bool shouldInstrumentFunction(const Function &F) {
@@ -85,16 +53,12 @@ static bool analyzeFunction(Function &F) {
   for (BasicBlock &BB : F) {
     for (Instruction &I : BB) {
       // Look for region markers
-      if (isMarkerInstruction(I)) {
-        auto *CI = dyn_cast<CallBase>(&I);
-        auto *IA = dyn_cast<InlineAsm>(CI->getCalledOperand()->stripPointerCasts());
-        StringRef AsmStr = IA->getAsmString();
-
-        if (AsmStr == UNSAFE_MARKER_BEGIN)
+      bool isBegin = false, isEnd = false;
+      if (isMarkerInstruction(I, isBegin, isEnd)) {
+        if (isBegin)
           inUnsafeRegion = true;
-        else if (AsmStr == UNSAFE_MARKER_END)
+        else if (isEnd)
           inUnsafeRegion = false;
-
         continue;
       }
 

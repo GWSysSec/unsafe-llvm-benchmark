@@ -13,14 +13,13 @@
 //===----------------------------------------------------------------------------===//
 
 #include "llvm/Transforms/DynamicAnalysis/ExternalCallTracker.h"
+#include "llvm/Transforms/DynamicAnalysis/UnsafeAnalysisUtils.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/IR/DebugInfoMetadata.h"
 #include "llvm/IR/InlineAsm.h"
 #include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/Module.h"
 #include "llvm/Transforms/InstMarker/InstMarker.h"
-#include <cstdlib>
-#include <cstring>
 
 using namespace llvm;
 
@@ -30,50 +29,17 @@ const char *llvm::EXTERNAL_CALL_END_FN = "external_call_end";
 
 namespace {
 
+/// \brief Check if a function is a runtime function for the CpuCycleCount +
+/// ExternalCallTracker experiment. These must not be instrumented to avoid
+/// recursion and measurement distortion.
 // UNSAFE-RUST BEGIN
-/// Get a debug location for instrumentation calls (ThinLTO compatibility).
-static DebugLoc getInstrumentationDebugLoc(Instruction *InsertBefore) {
-  if (DebugLoc DL = InsertBefore->getDebugLoc())
-    return DL;
-  for (Instruction &I : *InsertBefore->getParent()) {
-    if (DebugLoc DL = I.getDebugLoc())
-      return DL;
-  }
-  if (DISubprogram *SP = InsertBefore->getFunction()->getSubprogram())
-    return DILocation::get(SP->getContext(), 0, 0, SP);
-  return DebugLoc();
+static bool isOwnRuntimeFunction(StringRef Name) {
+  return Name.starts_with("cpu_cycle_") ||        // CpuCycleCount
+         Name.starts_with("record_program_") ||   // CpuCycleCount
+         Name.starts_with("print_cpu_cycle_") ||  // CpuCycleCount
+         Name.starts_with("external_call_");      // ExternalCallTracker
 }
 // UNSAFE-RUST END
-
-static bool isPrimaryPackage() {
-  const char *P = getenv("CARGO_PRIMARY_PACKAGE");
-  return P && strcmp(P, "1") == 0;
-}
-
-/// Checks if a function name is an analysis runtime function that should not
-/// be instrumented. Covers all runtime functions from every dynamic analysis
-/// pass to prevent cross-pass interference.
-// UNSAFE-RUST BEGIN
-static bool isRuntimeFunction(StringRef Name) {
-  return Name.starts_with("cpu_cycle_") ||          // CpuCycleCount
-         Name.starts_with("record_") ||             // CpuCycleCount
-         Name.starts_with("print_cpu_cycle_") ||    // CpuCycleCount
-         Name.starts_with("external_call_") ||      // ExternalCallTracker
-         Name.starts_with("dyn_mem_") ||            // HeapTracker
-         Name.starts_with("dyn_unsafe_mem_") ||     // HeapTracker
-         Name.starts_with("__unsafe_") ||           // UnsafeFunctionTracker/UnsafeInstCounter
-         Name.starts_with("track_unsafe_line_") ||  // DynamicLineCount
-         Name.starts_with("register_unsafe_line") ||// DynamicLineCount
-         Name.starts_with("print_unsafe_");         // DynamicLineCount
-}
-// UNSAFE-RUST END
-
-/// Checks if a CallBase is an InstMarker inline asm marker.
-static bool isMarkerAsm(CallBase *Call, StringRef MarkerStr) {
-  if (auto *IA = dyn_cast<InlineAsm>(Call->getCalledOperand()))
-    return IA->getAsmString() == MarkerStr;
-  return false;
-}
 
 /// Instruments external function calls within a function.
 /// Uses a three-pass strategy to avoid iterator invalidation.
@@ -114,7 +80,7 @@ bool instrumentExternalCalls(Function &F, FunctionCallee ExtStartFn,
         continue;
 
       // Skip runtime functions to avoid recursion
-      if (isRuntimeFunction(CalledFn->getName()))
+      if (isOwnRuntimeFunction(CalledFn->getName()))
         continue;
 
       CallsToInstrument.push_back(&I);
@@ -177,7 +143,7 @@ PreservedAnalyses ExternalCallTrackerPass::run(Module &M, ModuleAnalysisManager 
       continue;
 
     // Skip runtime functions
-    if (isRuntimeFunction(F.getName()))
+    if (isOwnRuntimeFunction(F.getName()))
       continue;
 
     if (instrumentExternalCalls(F, ExtStartFn, ExtEndFn))

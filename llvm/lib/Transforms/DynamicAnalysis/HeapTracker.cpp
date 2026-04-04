@@ -14,6 +14,7 @@
 //===-------------------------------------------------------------------------------===//
 
 #include "llvm/Transforms/DynamicAnalysis/HeapTracker.h"
+#include "llvm/Transforms/DynamicAnalysis/UnsafeAnalysisUtils.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Analysis/PostDominators.h"
 #include "llvm/IR/BasicBlock.h"
@@ -30,8 +31,6 @@
 #include "llvm/IR/DebugInfoMetadata.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Transforms/InstMarker/InstMarker.h"
-#include <cstdlib>
-#include <cstring>
 
 #define DEBUG_TYPE "heap-tracker"
 
@@ -41,27 +40,6 @@ const char *llvm::DYN_MEM_ACCESS_FN = "dyn_mem_access";
 const char *llvm::DYN_UNSAFE_MEM_ACCESS_FN = "dyn_unsafe_mem_access";
 
 namespace {
-
-// UNSAFE-RUST BEGIN
-/// Get a debug location for instrumentation calls (ThinLTO compatibility).
-static DebugLoc getInstrumentationDebugLoc(Instruction *InsertBefore) {
-  if (DebugLoc DL = InsertBefore->getDebugLoc())
-    return DL;
-  for (Instruction &I : *InsertBefore->getParent()) {
-    if (DebugLoc DL = I.getDebugLoc())
-      return DL;
-  }
-  if (DISubprogram *SP = InsertBefore->getFunction()->getSubprogram())
-    return DILocation::get(SP->getContext(), 0, 0, SP);
-  return DebugLoc();
-}
-// UNSAFE-RUST END
-
-static bool isPrimaryPackage() {
-  const char *P = getenv("CARGO_PRIMARY_PACKAGE");
-  return P && strcmp(P, "1") == 0;
-}
-
 
 /// \brief represents a validated sese region bounded by begin/end markers.
 struct SESERegion {
@@ -99,16 +77,10 @@ void collectMarkers(Function &F,
   for (BasicBlock &BB : F) {
     for (Instruction &I : BB) {
       if (auto *CI = dyn_cast<CallInst>(&I)) {
-        if (CI->isInlineAsm()) {
-          if (auto *IA = dyn_cast<InlineAsm>(CI->getCalledOperand())) {
-            StringRef AsmStr = IA->getAsmString();
-            if (AsmStr == UNSAFE_MARKER_BEGIN) {
-              BeginMarkers.push_back(CI);
-            } else if (AsmStr == UNSAFE_MARKER_END) {
-              EndMarkers.push_back(CI);
-            }
-          }
-        }
+        if (isMarkerBegin(I))
+          BeginMarkers.push_back(CI);
+        else if (isMarkerEnd(I))
+          EndMarkers.push_back(CI);
       }
     }
   }
