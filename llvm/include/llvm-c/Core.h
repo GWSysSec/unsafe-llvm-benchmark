@@ -4478,6 +4478,13 @@ LLVMBool LLVMIsMultithreaded(void);
  *  is compiled from unsafe Rust source code.
  */
 void LLVMSetInstUnsafeMetadata(LLVMValueRef Inst);
+
+/** Add metadata to a call/invoke instruction indicating that it calls a
+ *  Rust standard library function from within unsafe code.
+ *  Path is the fully qualified def path (e.g., "std::vec::Vec::<T>::set_len").
+ */
+void LLVMSetInstStdlibCallMetadata(LLVMValueRef Inst, const char *Path,
+                                   size_t PathLen);
 //  UNSAFE-RUST END
 
 LLVM_C_EXTERN_C_END

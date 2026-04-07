@@ -4288,4 +4288,15 @@ void LLVMSetInstUnsafeMetadata(LLVMValueRef Inst) {
   MDNode *unsafe_inst_mdnode = MDNode::get(C, unsafe_inst_mdstr);
   I->setMetadata("unsafe_inst", unsafe_inst_mdnode);
 }
+
+void LLVMSetInstStdlibCallMetadata(LLVMValueRef Inst, const char *Path,
+                                   size_t PathLen) {
+  Value *V = unwrap(Inst);
+  Instruction *I = dyn_cast<Instruction>(V);
+  if (!I) return;
+  LLVMContext &C = I->getContext();
+  MDString *PathMD = MDString::get(C, StringRef(Path, PathLen));
+  MDNode *StdlibCallMD = MDNode::get(C, PathMD);
+  I->setMetadata("stdlib_call", StdlibCallMD);
+}
 // UNSAFE-RUST END
