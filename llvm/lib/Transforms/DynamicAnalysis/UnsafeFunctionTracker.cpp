@@ -45,30 +45,48 @@ static bool shouldInstrumentFunction(const Function &F) {
          !Name.starts_with("llvm.");
 }
 
-/// \brief Analyze function for unsafe characteristics according to new criteria
-static bool analyzeFunction(Function &F) {
-  // Scan for regions and metadata inside regions
-  bool inUnsafeRegion = false;
+/// \brief Analysis result for a function's unsafe characteristics
+struct FunctionUnsafeInfo {
+  bool hasUnsafeRegions;  // Function contains marker pairs
+  bool hasUnsafeInst;     // Function has !unsafe_inst metadata inside a region
+};
+
+/// \brief Analyze function for unsafe characteristics
+///
+/// Two flags are tracked independently:
+///
+/// - hasUnsafeRegions: marker pairs exist in the function.  This is the
+///   primary signal — InstMarker inserts markers around unsafe blocks
+///   before optimization, and they survive as durable inline asm.
+///
+/// - hasUnsafeInst: at least one instruction inside a marker region carries
+///   !unsafe_inst metadata.  At O0 this refines the picture (a region can
+///   contain only safe operations).  At O2 the metadata *may* survive on
+///   instructions that were not eliminated, but is not guaranteed — so
+///   hasUnsafeRegions is the authoritative flag for "function has unsafe code."
+static FunctionUnsafeInfo analyzeFunction(Function &F) {
+  FunctionUnsafeInfo Info = {false, false};
+  bool inRegion = false;
 
   for (BasicBlock &BB : F) {
     for (Instruction &I : BB) {
-      // Look for region markers
       bool isBegin = false, isEnd = false;
       if (isMarkerInstruction(I, isBegin, isEnd)) {
-        if (isBegin)
-          inUnsafeRegion = true;
-        else if (isEnd)
-          inUnsafeRegion = false;
+        if (isBegin) {
+          inRegion = true;
+          Info.hasUnsafeRegions = true;
+        } else if (isEnd) {
+          inRegion = false;
+        }
         continue;
       }
 
-      // Only check for unsafe_inst metadata if inside region
-      if (inUnsafeRegion && hasUnsafeMetadata(I))
-        return true;
+      if (inRegion && hasUnsafeMetadata(I))
+        Info.hasUnsafeInst = true;
     }
   }
 
-  return false;
+  return Info;
 }
 
 } // anonymous namespace
@@ -95,12 +113,12 @@ PreservedAnalyses UnsafeFunctionTrackerPass::run(Module &M, ModuleAnalysisManage
                   MDNode::get(Ctx, ConstantAsMetadata::get(
                     ConstantInt::get(Type::getInt32Ty(Ctx), nextId))));
 
-    bool isUnsafe = analyzeFunction(F);
+    FunctionUnsafeInfo Info = analyzeFunction(F);
 
     metadata.push_back({
       nextId++,
-      static_cast<uint8_t>(isUnsafe ? 1 : 0), // Now only track real unsafe functions
-      0, // Optionally drop hasUnsafeRegions, or keep for extra info
+      static_cast<uint8_t>(Info.hasUnsafeInst ? 1 : 0),
+      static_cast<uint8_t>(Info.hasUnsafeRegions ? 1 : 0),
       0
     });
 
@@ -114,22 +132,23 @@ PreservedAnalyses UnsafeFunctionTrackerPass::run(Module &M, ModuleAnalysisManage
   Type *VoidTy = Type::getVoidTy(Ctx);
   Type *Int32Ty = Type::getInt32Ty(Ctx);
   Type *Int8PtrTy = PointerType::get(Type::getInt8Ty(Ctx), 0);
-  
+
+  // init_metadata returns u32 base offset for global ID remapping
   FunctionCallee InitMetadataFn = M.getOrInsertFunction(
     INIT_METADATA_FN,
-    FunctionType::get(VoidTy, {Int8PtrTy, Int32Ty}, false)
+    FunctionType::get(Int32Ty, {Int8PtrTy, Int32Ty}, false)
   );
-  
+
   FunctionCallee RecordFunctionFn = M.getOrInsertFunction(
     RECORD_FUNCTION_FN,
     FunctionType::get(VoidTy, {Int32Ty}, false)
   );
-  
+
   FunctionCallee DumpStatsFn = M.getOrInsertFunction(
     DUMP_STATS_FN,
     FunctionType::get(VoidTy, {}, false)
   );
-  
+
   // Set attributes
   for (auto *FnCallee : {&InitMetadataFn, &RecordFunctionFn, &DumpStatsFn}) {
     if (auto *F = dyn_cast<Function>(FnCallee->getCallee())) {
@@ -166,40 +185,52 @@ PreservedAnalyses UnsafeFunctionTrackerPass::run(Module &M, ModuleAnalysisManage
   );
   GV->setAlignment(Align(8));
   
-  // Phase 4: Create initialization function
+  // Phase 4: Create per-module base offset global and initialization function.
+  // Each CGU gets its own base offset from init_metadata(); record_function
+  // uses (base + local_id) so IDs are globally unique across CGUs.
+  GlobalVariable *BaseGV = new GlobalVariable(
+    M, Int32Ty, false, GlobalValue::InternalLinkage,
+    ConstantInt::get(Int32Ty, 0), "__unsafe_func_id_base"
+  );
+
   Function *InitFunc = Function::Create(
     FunctionType::get(VoidTy, false),
     GlobalValue::InternalLinkage,
     "__unsafe_module_init", &M
   );
-  
+
   BasicBlock *InitBB = BasicBlock::Create(Ctx, "entry", InitFunc);
   IRBuilder<> Builder(InitBB);
-  
+
   Value *TablePtr = Builder.CreateBitCast(GV, Int8PtrTy);
   Value *Count = ConstantInt::get(Int32Ty, metadata.size());
-  Builder.CreateCall(InitMetadataFn, {TablePtr, Count});
+  Value *Base = Builder.CreateCall(InitMetadataFn, {TablePtr, Count});
+  Builder.CreateStore(Base, BaseGV);
   Builder.CreateRetVoid();
-  
+
   appendToGlobalCtors(M, InitFunc, 0);
-  
+
   // Register destructor
   if (auto *F = dyn_cast<Function>(DumpStatsFn.getCallee())) {
     appendToGlobalDtors(M, F, 0);
   }
-  
-  // Phase 5: Instrument function entries
+
+  // Phase 5: Instrument function entries with (base + local_id)
   for (Function *F : functionsToInstrument) {
     BasicBlock &EntryBB = F->getEntryBlock();
     Instruction *InsertPt = &EntryBB.front();
     IRBuilder<> EntryBuilder(InsertPt);
 
-    // Get function ID from metadata
+    // Get local function ID from metadata
     MDNode *MD = F->getMetadata(FUNCTION_ID_METADATA);
     ConstantAsMetadata *CMD = cast<ConstantAsMetadata>(MD->getOperand(0));
     ConstantInt *IdConst = cast<ConstantInt>(CMD->getValue());
 
-    auto *Call = EntryBuilder.CreateCall(RecordFunctionFn, {IdConst});
+    // Global ID = base + local_id
+    Value *Base = EntryBuilder.CreateLoad(Int32Ty, BaseGV);
+    Value *GlobalId = EntryBuilder.CreateAdd(Base, IdConst);
+
+    auto *Call = EntryBuilder.CreateCall(RecordFunctionFn, {GlobalId});
     Call->setDebugLoc(getInstrumentationDebugLoc(InsertPt));
   }
   
