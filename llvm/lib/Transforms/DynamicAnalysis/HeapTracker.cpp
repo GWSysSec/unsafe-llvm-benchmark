@@ -41,12 +41,6 @@ const char *llvm::DYN_UNSAFE_MEM_ACCESS_FN = "dyn_unsafe_mem_access";
 
 namespace {
 
-/// \brief represents a validated sese region bounded by begin/end markers.
-struct SESERegion {
-  CallInst *Begin;
-  CallInst *End;
-};
-
 /// \brief Add a call to dyn_mem_access() before each memory instruction.
 /// \param F The target function.
 /// \param DynMemAccessFn The to-be-inserted callee.
@@ -70,73 +64,20 @@ void instrumentMemInst(Function &F, FunctionCallee DynMemAccessFn) {
   }
 }
 
-/// \brief collect all unsafe marker begin/end callsites in the function.
-void collectMarkers(Function &F,
-                    std::vector<CallInst*> &BeginMarkers,
-                    std::vector<CallInst*> &EndMarkers) {
-  for (BasicBlock &BB : F) {
-    for (Instruction &I : BB) {
-      if (auto *CI = dyn_cast<CallInst>(&I)) {
-        if (isMarkerBegin(I))
-          BeginMarkers.push_back(CI);
-        else if (isMarkerEnd(I))
-          EndMarkers.push_back(CI);
-      }
-    }
-  }
-}
-
-/// \brief validate sese regions by matching begin/end markers using dominance.
-/// a valid sese region requires: begin dominates end AND end post-dominates begin.
-void validateSESERegions(const std::vector<CallInst*> &BeginMarkers,
-                         const std::vector<CallInst*> &EndMarkers,
-                         DominatorTree &DT, PostDominatorTree &PDT,
-                         std::vector<SESERegion> &ValidRegions) {
-  for (CallInst *Begin : BeginMarkers) {
-    bool Matched = false;
-    for (CallInst *End : EndMarkers) {
-      if (DT.dominates(Begin, End) && PDT.dominates(End, Begin)) {
-        ValidRegions.push_back({Begin, End});
-        LLVM_DEBUG(dbgs() << "heap-tracker: valid sese region found in "
-                          << Begin->getFunction()->getName() << "\n");
-        Matched = true;
-        break;
-      }
-    }
-    if (!Matched) {
-      LLVM_DEBUG(dbgs() << "heap-tracker: unmatched marker in "
-                        << Begin->getFunction()->getName() << "\n");
-    }
-  }
-}
-
-/// \brief check if an instruction's bb lies inside any valid sese region.
-bool isInSESERegion(const Instruction &I,
-                    const std::vector<SESERegion> &ValidRegions,
-                    DominatorTree &DT, PostDominatorTree &PDT) {
-  for (const auto &R : ValidRegions) {
-    if (DT.dominates(R.Begin->getParent(), I.getParent()) &&
-        PDT.dominates(R.End->getParent(), I.getParent())) {
-      return true;
-    }
-  }
-  return false;
-}
-
 /// \brief instrument unsafe memory accesses using sese region detection.
 /// replaces the old per-bb linear scan with cross-bb aware region checking.
 bool instrumentUnsafeMemInst(Function &F, FunctionCallee DynUnsafeMemAccessFn,
                              DominatorTree &DT, PostDominatorTree &PDT) {
   // phase 1: collect markers
   std::vector<CallInst*> BeginMarkers, EndMarkers;
-  collectMarkers(F, BeginMarkers, EndMarkers);
+  llvm::collectMarkers(F, BeginMarkers, EndMarkers);
 
   if (BeginMarkers.empty())
     return false;
 
   // phase 2: validate sese regions
   std::vector<SESERegion> ValidRegions;
-  validateSESERegions(BeginMarkers, EndMarkers, DT, PDT, ValidRegions);
+  llvm::validateSESERegions(BeginMarkers, EndMarkers, DT, PDT, ValidRegions);
 
   if (ValidRegions.empty())
     return false;
@@ -146,7 +87,7 @@ bool instrumentUnsafeMemInst(Function &F, FunctionCallee DynUnsafeMemAccessFn,
   for (BasicBlock &BB : F) {
     for (Instruction &I : BB) {
       if ((isa<LoadInst>(I) || isa<StoreInst>(I)) &&
-          isInSESERegion(I, ValidRegions, DT, PDT)) {
+          llvm::isInSESERegion(I, ValidRegions, DT, PDT)) {
         UnsafeMemInsts.push_back(&I);
       }
     }

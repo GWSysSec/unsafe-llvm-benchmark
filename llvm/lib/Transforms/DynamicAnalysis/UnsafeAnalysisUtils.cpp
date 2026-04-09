@@ -14,8 +14,10 @@
 // UNSAFE-RUST BEGIN
 #include "llvm/Transforms/DynamicAnalysis/UnsafeAnalysisUtils.h"
 #include "llvm/Transforms/InstMarker/InstMarker.h"
+#include "llvm/Analysis/PostDominators.h"
 #include "llvm/IR/BasicBlock.h"
 #include "llvm/IR/DebugInfoMetadata.h"
+#include "llvm/IR/Dominators.h"
 #include "llvm/IR/Function.h"
 #include "llvm/IR/InlineAsm.h"
 #include "llvm/IR/Instructions.h"
@@ -89,6 +91,55 @@ bool llvm::isMarkerAsm(const CallBase *Call, const char *MarkerStr) {
     return false;
   if (const auto *IA = dyn_cast<InlineAsm>(Call->getCalledOperand()))
     return IA->getAsmString() == MarkerStr;
+  return false;
+}
+
+void llvm::collectMarkers(Function &F,
+                          std::vector<CallInst *> &BeginMarkers,
+                          std::vector<CallInst *> &EndMarkers) {
+  for (BasicBlock &BB : F) {
+    for (Instruction &I : BB) {
+      if (auto *CI = dyn_cast<CallInst>(&I)) {
+        if (isMarkerBegin(I))
+          BeginMarkers.push_back(CI);
+        else if (isMarkerEnd(I))
+          EndMarkers.push_back(CI);
+      }
+    }
+  }
+}
+
+void llvm::validateSESERegions(const std::vector<CallInst *> &BeginMarkers,
+                               const std::vector<CallInst *> &EndMarkers,
+                               DominatorTree &DT, PostDominatorTree &PDT,
+                               std::vector<SESERegion> &ValidRegions) {
+  for (CallInst *Begin : BeginMarkers) {
+    bool Matched = false;
+    for (CallInst *End : EndMarkers) {
+      if (DT.dominates(Begin, End) && PDT.dominates(End, Begin)) {
+        ValidRegions.push_back({Begin, End});
+        LLVM_DEBUG(dbgs() << "sese: valid region in "
+                          << Begin->getFunction()->getName() << "\n");
+        Matched = true;
+        break;
+      }
+    }
+    if (!Matched) {
+      LLVM_DEBUG(dbgs() << "sese: unmatched marker in "
+                        << Begin->getFunction()->getName() << "\n");
+    }
+  }
+}
+
+bool llvm::isInSESERegion(const Instruction &I,
+                          const std::vector<SESERegion> &ValidRegions,
+                          DominatorTree &DT, PostDominatorTree &PDT) {
+  for (const auto &R : ValidRegions) {
+    if (DT.dominates(R.Begin->getParent(), I.getParent()) &&
+        PDT.dominates(R.End->getParent(), I.getParent())) {
+      return true;
+    }
+  }
   return false;
 }
 

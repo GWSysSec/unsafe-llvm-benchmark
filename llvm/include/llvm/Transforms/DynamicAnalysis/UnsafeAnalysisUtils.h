@@ -19,11 +19,16 @@
 #define LLVM_TRANSFORMS_DYNAMICANALYSIS_UNSAFEANALYSISUTILS_H
 
 #include "llvm/IR/DebugLoc.h"
+#include "llvm/ADT/SmallVector.h"
+#include <vector>
 
 namespace llvm {
 
 class Instruction;
 class CallBase;
+class CallInst;
+class DominatorTree;
+class PostDominatorTree;
 
 /// \brief Check if this compilation unit is the primary Cargo package.
 ///
@@ -60,6 +65,38 @@ bool isMarkerInstruction(const Instruction &I, bool &IsBegin, bool &IsEnd);
 bool isMarkerAsm(const CallBase *Call, const char *MarkerStr);
 
 class Function;
+
+/// \brief A validated SESE region bounded by begin/end markers.
+///
+/// A valid SESE region satisfies: Begin dominates End AND End post-dominates
+/// Begin. This ensures the region has exactly one entry and one exit regardless
+/// of CFG shape after optimization.
+struct SESERegion {
+  CallInst *Begin;
+  CallInst *End;
+};
+
+/// \brief Collect all unsafe marker begin/end callsites in a function.
+void collectMarkers(Function &F,
+                    std::vector<CallInst *> &BeginMarkers,
+                    std::vector<CallInst *> &EndMarkers);
+
+/// \brief Validate SESE regions by matching begin/end markers using dominance.
+///
+/// A valid SESE region requires: begin dominates end AND end post-dominates
+/// begin. Unmatched markers are logged via LLVM_DEBUG.
+void validateSESERegions(const std::vector<CallInst *> &BeginMarkers,
+                         const std::vector<CallInst *> &EndMarkers,
+                         DominatorTree &DT, PostDominatorTree &PDT,
+                         std::vector<SESERegion> &ValidRegions);
+
+/// \brief Check if an instruction lies inside any valid SESE region.
+///
+/// Uses dominance: Begin's BB dominates I's BB AND End's BB post-dominates
+/// I's BB.
+bool isInSESERegion(const Instruction &I,
+                    const std::vector<SESERegion> &ValidRegions,
+                    DominatorTree &DT, PostDominatorTree &PDT);
 
 /// \brief Verify that unsafe markers in a function are well-formed.
 ///

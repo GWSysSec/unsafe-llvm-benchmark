@@ -15,7 +15,9 @@
 #include "llvm/Transforms/DynamicAnalysis/ExternalCallTracker.h"
 #include "llvm/Transforms/DynamicAnalysis/UnsafeAnalysisUtils.h"
 #include "llvm/ADT/SmallVector.h"
+#include "llvm/Analysis/PostDominators.h"
 #include "llvm/IR/DebugInfoMetadata.h"
+#include "llvm/IR/Dominators.h"
 #include "llvm/IR/InlineAsm.h"
 #include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/Module.h"
@@ -42,44 +44,46 @@ static bool isOwnRuntimeFunction(StringRef Name) {
 // UNSAFE-RUST END
 
 /// Instruments external function calls within a function.
-/// Uses a three-pass strategy to avoid iterator invalidation.
-/// Skips external calls inside unsafe marker regions — those calls are already
+/// Skips external calls inside unsafe SESE regions — those calls are already
 /// measured by CpuCycleCount, and the runtime would no-op them anyway
 /// (IN_UNSAFE > 0). Skipping avoids wasted MFENCE + function call overhead
 /// that would otherwise inflate unsafe cycle measurements.
+///
+/// Uses SESE region detection (DomTree + PostDomTree) for cross-BB correctness.
 bool instrumentExternalCalls(Function &F, FunctionCallee ExtStartFn,
                               FunctionCallee ExtEndFn) {
-  // First pass: collect external calls to instrument, skipping those inside
-  // unsafe marker regions (between marker_begin and marker_end).
+  // Build SESE regions for cross-BB unsafe region detection
+  DominatorTree DT(F);
+  PostDominatorTree PDT(F);
+
+  std::vector<CallInst *> BeginMarkers, EndMarkers;
+  llvm::collectMarkers(F, BeginMarkers, EndMarkers);
+
+  std::vector<SESERegion> ValidRegions;
+  if (!BeginMarkers.empty())
+    llvm::validateSESERegions(BeginMarkers, EndMarkers, DT, PDT, ValidRegions);
+
+  // Collect external calls to instrument, skipping those inside SESE regions
   SmallVector<Instruction*, 32> CallsToInstrument;
 
   for (BasicBlock &BB : F) {
-    bool InsideMarkerRegion = false;
-
     for (Instruction &I : BB) {
       auto *Call = dyn_cast<CallBase>(&I);
       if (!Call) continue;
 
-      // Track marker region boundaries
-      if (isMarkerAsm(Call, llvm::UNSAFE_MARKER_BEGIN)) {
-        InsideMarkerRegion = true;
+      // Skip markers themselves
+      bool isBegin = false, isEnd = false;
+      if (isMarkerInstruction(I, isBegin, isEnd))
         continue;
-      }
-      if (isMarkerAsm(Call, llvm::UNSAFE_MARKER_END)) {
-        InsideMarkerRegion = false;
-        continue;
-      }
 
-      // Skip calls inside unsafe marker regions
-      if (InsideMarkerRegion)
+      // Skip calls inside unsafe SESE regions
+      if (!ValidRegions.empty() && llvm::isInSESERegion(I, ValidRegions, DT, PDT))
         continue;
 
       Function *CalledFn = Call->getCalledFunction();
-      // Check if the called function is external (declaration) and not an intrinsic
       if (!CalledFn || !CalledFn->isDeclaration() || CalledFn->isIntrinsic())
         continue;
 
-      // Skip runtime functions to avoid recursion
       if (isOwnRuntimeFunction(CalledFn->getName()))
         continue;
 
@@ -90,20 +94,17 @@ bool instrumentExternalCalls(Function &F, FunctionCallee ExtStartFn,
   if (CallsToInstrument.empty())
     return false;
 
-  // Second pass: insert instrumentation around collected calls
+  // Insert instrumentation around collected calls
   bool Modified = false;
   for (Instruction *I : CallsToInstrument) {
-    // Skip terminator instructions to avoid IR corruption
     if (I->isTerminator())
       continue;
 
-    // Insert timer start before the call
     IRBuilder<> Builder(I);
     Builder.CreateFence(AtomicOrdering::SequentiallyConsistent);
     auto *StartCall = Builder.CreateCall(ExtStartFn);
     StartCall->setDebugLoc(getInstrumentationDebugLoc(I));
 
-    // Insert timer end after the call
     Instruction *NextInst = I->getNextNonDebugInstruction();
     if (NextInst) {
       IRBuilder<> EndBuilder(NextInst);
@@ -112,8 +113,6 @@ bool instrumentExternalCalls(Function &F, FunctionCallee ExtStartFn,
       EndCall->setDebugLoc(getInstrumentationDebugLoc(NextInst));
       Modified = true;
     }
-    // Note: Calls at block end without a next instruction are skipped to avoid
-    // IR corruption. The runtime will handle this gracefully via the TSC == 0 check.
   }
 
   return Modified;

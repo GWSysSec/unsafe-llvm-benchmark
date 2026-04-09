@@ -17,12 +17,16 @@
 
 #include "llvm/IR/PassManager.h"
 #include <cstdint>
+#include <vector>
 
 namespace llvm {
 
 class Function;
 class BasicBlock;
 class Instruction;
+class DominatorTree;
+class PostDominatorTree;
+struct SESERegion;
 
 /// \brief Count unsafe instructions in functions.
 ///
@@ -38,11 +42,14 @@ private:
   enum UnsafeCategory : uint8_t {
     UNSAFE_LOAD = 0,
     UNSAFE_STORE = 1,
-    UNSAFE_CALL = 2,
-    UNSAFE_CAST = 3,
-    UNSAFE_GEP = 4,
-    UNSAFE_OTHER = 5,
-    MAX_UNSAFE_CATEGORIES = 6
+    UNSAFE_CALL_DIRECT = 2,
+    UNSAFE_CALL_INDIRECT = 3,
+    UNSAFE_CALL_INTRINSIC = 4,
+    UNSAFE_CAST = 5,
+    UNSAFE_GEP = 6,
+    UNSAFE_ATOMIC = 7,
+    UNSAFE_OTHER = 8,
+    MAX_UNSAFE_CATEGORIES = 9
   };
   
   /// \brief Counts for a basic block
@@ -57,7 +64,10 @@ private:
   };
   
   static bool getUnsafeCategory(const Instruction &I, UnsafeCategory &category);
-  static BlockCounts analyzeBasicBlock(BasicBlock &BB);
+  static BlockCounts analyzeBasicBlock(BasicBlock &BB,
+                                       const std::vector<SESERegion> &Regions,
+                                       DominatorTree &DT,
+                                       PostDominatorTree &PDT);
   static uint32_t getFunctionId(Function &F);
 };
 
