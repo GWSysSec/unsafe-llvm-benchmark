@@ -466,6 +466,7 @@ FUNCTION_PASS("view-post-dom-only", PostDomOnlyViewer())
 FUNCTION_PASS("wasm-eh-prepare", WasmEHPreparePass())
 FUNCTION_PASS("unsafe-rust-dummy", UnsafeRustDummyPass())
 FUNCTION_PASS("unsafe-inst-counter", UnsafeInstCounterPass())
+FUNCTION_PASS("stdlib-api-tracker", StdlibApiTrackerPass())
 #undef FUNCTION_PASS
 
 #ifndef FUNCTION_PASS_WITH_PARAMS

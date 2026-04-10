@@ -20,6 +20,7 @@
 
 #include "llvm/IR/DebugLoc.h"
 #include "llvm/ADT/SmallVector.h"
+#include "llvm/ADT/StringRef.h"
 #include <vector>
 
 namespace llvm {
@@ -63,6 +64,12 @@ bool isMarkerInstruction(const Instruction &I, bool &IsBegin, bool &IsEnd);
 ///
 /// Useful for passes (like CpuCycleCount) that work with CallBase* directly.
 bool isMarkerAsm(const CallBase *Call, const char *MarkerStr);
+
+/// \brief Check if an instruction is a stdlib call marker from the MIR pass.
+///
+/// These markers have the form: "# __unsafe_stdlib_call:{api_path}"
+/// If true, \p ApiPath is set to the API path portion of the asm string.
+bool isStdlibCallMarker(const Instruction &I, StringRef &ApiPath);
 
 class Function;
 

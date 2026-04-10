@@ -94,6 +94,20 @@ bool llvm::isMarkerAsm(const CallBase *Call, const char *MarkerStr) {
   return false;
 }
 
+static constexpr const char *STDLIB_CALL_MARKER_PREFIX =
+    "# __unsafe_stdlib_call:";
+
+bool llvm::isStdlibCallMarker(const Instruction &I, StringRef &ApiPath) {
+  if (const InlineAsm *IA = getInlineAsm(I)) {
+    StringRef AsmStr = IA->getAsmString();
+    if (AsmStr.starts_with(STDLIB_CALL_MARKER_PREFIX)) {
+      ApiPath = AsmStr.drop_front(strlen(STDLIB_CALL_MARKER_PREFIX));
+      return true;
+    }
+  }
+  return false;
+}
+
 void llvm::collectMarkers(Function &F,
                           std::vector<CallInst *> &BeginMarkers,
                           std::vector<CallInst *> &EndMarkers) {

@@ -144,6 +144,7 @@
 #include "llvm/Transforms/DynamicAnalysis/HeapTracker.h"
 #include "llvm/Transforms/DynamicAnalysis/UnsafeFunctionTracker.h"
 #include "llvm/Transforms/DynamicAnalysis/UnsafeInstCounter.h"
+#include "llvm/Transforms/DynamicAnalysis/StdlibApiTracker.h"
 // UNSAFE-RUST END
 // UNSAFE-SVF BEGIN
 #include "llvm/Transforms/SVFAnalysis/RuntimeAlias.h"
@@ -331,6 +332,11 @@ static cl::opt<bool> EnableUnsafeFunctionTrackerPass(
 static cl::opt<bool> EnableUnsafeInstCounterPass(
   "enable-unsafe-inst-counter", cl::init(false), cl::Hidden,
   cl::desc("Enable the UnsafeInstCounter pass")
+);
+
+static cl::opt<bool> EnableStdlibApiTrackerPass(
+  "enable-stdlib-api-tracker", cl::init(false), cl::Hidden,
+  cl::desc("Enable the StdlibApiTracker pass")
 );
 
 // UNSAFE-RUST END
@@ -1581,6 +1587,14 @@ PassBuilder::buildPerModuleDefaultPipeline(OptimizationLevel Level,
     MPM.addPass(createModuleToFunctionPassAdaptor(std::move(InstFPM)));
   }
 
+  // StdlibApiTracker runs early (pre-optimization) because it reads
+  // !stdlib_call metadata which is stripped when calls are inlined at O2.
+  if (EnableStdlibApiTrackerPass) {
+    FunctionPassManager StdlibFPM;
+    StdlibFPM.addPass(StdlibApiTrackerPass());
+    MPM.addPass(createModuleToFunctionPassAdaptor(std::move(StdlibFPM)));
+  }
+
   if (EnableUnsafeRustDummyPass) {
     FunctionPassManager DummyFPM;
     DummyFPM.addPass(UnsafeRustDummyPass());
@@ -1656,7 +1670,7 @@ PassBuilder::buildPerModuleDefaultPipeline(OptimizationLevel Level,
   if (EnableUnsafeInstCounterPass) {
     FunctionPassManager UnsafeFPM;
     UnsafeFPM.addPass(UnsafeInstCounterPass());
-    MPM.addPass(createModuleToFunctionPassAdaptor(std::move(UnsafeFPM))); 
+    MPM.addPass(createModuleToFunctionPassAdaptor(std::move(UnsafeFPM)));
   }
 
   if (EnableDynamicLineCountPass) {
@@ -1719,6 +1733,14 @@ PassBuilder::buildThinLTOPreLinkDefaultPipeline(OptimizationLevel Level) {
     FunctionPassManager InstFPM;
     InstFPM.addPass(InstMarkerPass());
     MPM.addPass(createModuleToFunctionPassAdaptor(std::move(InstFPM)));
+  }
+
+  // StdlibApiTracker runs early (pre-optimization) because it reads
+  // !stdlib_call metadata which is stripped when calls are inlined at O2.
+  if (EnableStdlibApiTrackerPass) {
+    FunctionPassManager StdlibFPM;
+    StdlibFPM.addPass(StdlibApiTrackerPass());
+    MPM.addPass(createModuleToFunctionPassAdaptor(std::move(StdlibFPM)));
   }
 
   if (EnableUnsafeRustDummyPass) {
@@ -2203,6 +2225,14 @@ ModulePassManager PassBuilder::buildO0DefaultPipeline(OptimizationLevel Level,
     MPM.addPass(createModuleToFunctionPassAdaptor(std::move(InstFPM)));
   }
 
+  // StdlibApiTracker runs early (pre-optimization) because it reads
+  // !stdlib_call metadata which is stripped when calls are inlined at O2.
+  if (EnableStdlibApiTrackerPass) {
+    FunctionPassManager StdlibFPM;
+    StdlibFPM.addPass(StdlibApiTrackerPass());
+    MPM.addPass(createModuleToFunctionPassAdaptor(std::move(StdlibFPM)));
+  }
+
   if (EnableUnsafeRustDummyPass) {
     FunctionPassManager DummyFPM;
     DummyFPM.addPass(UnsafeRustDummyPass());
@@ -2325,7 +2355,7 @@ ModulePassManager PassBuilder::buildO0DefaultPipeline(OptimizationLevel Level,
   if (EnableUnsafeInstCounterPass) {
     FunctionPassManager UnsafeFPM;
     UnsafeFPM.addPass(UnsafeInstCounterPass());
-    MPM.addPass(createModuleToFunctionPassAdaptor(std::move(UnsafeFPM))); 
+    MPM.addPass(createModuleToFunctionPassAdaptor(std::move(UnsafeFPM)));
   }
 
   if (EnableDynamicLineCountPass) {

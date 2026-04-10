@@ -6,6 +6,7 @@ add_llvm_component_library(LLVMDynamicAnalysis
   ExternalCallTracker.cpp
   UnsafeFunctionTracker.cpp
   UnsafeInstCounter.cpp
+  StdlibApiTracker.cpp
 
   ADDITIONAL_HEADER_DIRS
   ${LLVM_MAIN_INCLUDE_DIR}/llvm/Transforms/DynamicAnalysis

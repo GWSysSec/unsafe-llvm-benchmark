@@ -298,6 +298,7 @@
 #include "llvm/Transforms/DynamicAnalysis/HeapTracker.h"
 #include "llvm/Transforms/DynamicAnalysis/UnsafeFunctionTracker.h"
 #include "llvm/Transforms/DynamicAnalysis/UnsafeInstCounter.h"
+#include "llvm/Transforms/DynamicAnalysis/StdlibApiTracker.h"
 // UNSAFE-RUST END
 // UNSAFE-SVF BEGIN
 #include "llvm/Transforms/SVFAnalysis/RuntimeAlias.h"
