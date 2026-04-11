@@ -23,6 +23,11 @@ class Module;
 // Runtime function names for external call tracking
 extern const char *EXTERNAL_CALL_START_FN;
 extern const char *EXTERNAL_CALL_END_FN;
+// UNSAFE-RUST BEGIN
+// Phase 6.5: hooks for external calls made from inside an unsafe SESE region.
+extern const char *UNSAFE_EXTERNAL_CALL_START_FN;
+extern const char *UNSAFE_EXTERNAL_CALL_END_FN;
+// UNSAFE-RUST END
 
 /// \brief Pass that tracks time spent in external function calls.
 ///

@@ -27,13 +27,17 @@
 #include "llvm/IR/Metadata.h"
 #include "llvm/IR/Module.h"
 #include "llvm/IR/Type.h"
+#include "llvm/Support/Debug.h"
 #include "llvm/Transforms/Utils/ModuleUtils.h"
 #include <set>
 #include <string>
 
+#define DEBUG_TYPE "dynamic-line-count"
+
 using namespace llvm;
 
 const char *REGISTER_UNSAFE_LINE_FN = "register_unsafe_line";
+const char *REGISTER_PRE_OPT_COUNT_FN = "register_unsafe_lines_pre_opt_count";
 const char *TRACK_UNSAFE_LINE_EXECUTION_FN = "track_unsafe_line_execution";
 const char *PRINT_UNSAFE_COVERAGE_STATS_FN = "print_unsafe_coverage_stats";
 
@@ -42,6 +46,7 @@ namespace {
 /// \brief Setup runtime functions for unsafe line coverage tracking.
 static void setupRuntimeFunctions(Module &M,
                                   FunctionCallee &RegisterLineFn,
+                                  FunctionCallee &RegisterPreOptCountFn,
                                   FunctionCallee &TrackExecutionFn,
                                   FunctionCallee &PrintStatsFn) {
   LLVMContext &Ctx = M.getContext();
@@ -52,6 +57,13 @@ static void setupRuntimeFunctions(Module &M,
   // register_unsafe_line(line, file)
   FunctionType *RegisterLineFnTy = FunctionType::get(VoidTy, {Int64Ty, Int8PtrTy}, false);
   RegisterLineFn = M.getOrInsertFunction(REGISTER_UNSAFE_LINE_FN, RegisterLineFnTy);
+
+  // register_unsafe_lines_pre_opt_count(u64) — total unsafe source lines found
+  // by InstMarker pre-optimization. Multi-CGU: runtime accumulates via fetch_add.
+  FunctionType *RegisterPreOptCountFnTy =
+      FunctionType::get(VoidTy, {Int64Ty}, false);
+  RegisterPreOptCountFn =
+      M.getOrInsertFunction(REGISTER_PRE_OPT_COUNT_FN, RegisterPreOptCountFnTy);
 
   // track_unsafe_line_execution(line, file)
   FunctionType *TrackExecutionFnTy = FunctionType::get(VoidTy, {Int64Ty, Int8PtrTy}, false);
@@ -72,6 +84,7 @@ static bool shouldInstrumentFunction(const Function &F) {
   if (F.isDeclaration() || F.isIntrinsic()) return false;
   StringRef Name = F.getName();
   return Name != REGISTER_UNSAFE_LINE_FN &&
+         Name != REGISTER_PRE_OPT_COUNT_FN &&
          Name != TRACK_UNSAFE_LINE_EXECUTION_FN &&
          Name != PRINT_UNSAFE_COVERAGE_STATS_FN &&
          Name != "unsafe_lines_module_ctor" &&
@@ -171,32 +184,42 @@ static bool instrumentFunction(Function &F,
 // UNSAFE-RUST END
 
 /// \brief Create a module constructor that registers all unsafe lines at startup.
+///
+/// Also reports the pre-optimization unsafe line count (from the module's
+/// `unsafe_source_lines` NamedMDNode), so the runtime can show how many
+/// lines were eliminated between InstMarker and DynamicLineCount.
 static void createModuleConstructor(Module &M,
-                                   const std::set<std::string> &allUnsafeLines,
-                                   FunctionCallee RegisterLineFn) {
+                                   const std::set<std::string> &survivedLines,
+                                   uint64_t preOptCount,
+                                   FunctionCallee RegisterLineFn,
+                                   FunctionCallee RegisterPreOptCountFn) {
   LLVMContext &Ctx = M.getContext();
-  
-  // Create the constructor function
+
   FunctionType *CtorFnTy = FunctionType::get(Type::getVoidTy(Ctx), false);
   Function *CtorFn = Function::Create(CtorFnTy, GlobalValue::InternalLinkage,
                                       "unsafe_lines_module_ctor", &M);
-  
+
   BasicBlock *BB = BasicBlock::Create(Ctx, "entry", CtorFn);
   IRBuilder<> Builder(BB);
-  
-  // Register ALL unsafe lines found during compilation
-  for (const auto &lineKey : allUnsafeLines) {
+
+  // Report this module's pre-optimization unsafe line count.
+  // Multi-CGU: runtime fetch_add accumulates across modules.
+  Builder.CreateCall(RegisterPreOptCountFn,
+                     {ConstantInt::get(Type::getInt64Ty(Ctx), preOptCount)});
+
+  // Register the survived unsafe lines (denominator for coverage).
+  for (const auto &lineKey : survivedLines) {
     size_t colonPos = lineKey.find(':');
     std::string file = lineKey.substr(0, colonPos);
     unsigned line = std::stoul(lineKey.substr(colonPos + 1));
-    
+
     Value *LineArg = ConstantInt::get(Type::getInt64Ty(Ctx), line);
     Value *FileArg = createGlobalString(M, Builder, file);
     Builder.CreateCall(RegisterLineFn, {LineArg, FileArg});
   }
-  
+
   Builder.CreateRetVoid();
-  
+
   // Add to global constructors with priority 0 (runs before main)
   appendToGlobalCtors(M, CtorFn, 0);
 }
@@ -224,14 +247,76 @@ static void createModuleDestructor(Module &M, FunctionCallee PrintStatsFn) {
 } // anonymous namespace
 
 // UNSAFE-RUST BEGIN
+/// Collect (file:line) pairs for unsafe lines whose IR *survived* LLVM
+/// optimization. We walk all marker regions (which are durable inline asm
+/// pairs) and collect the !dbg line from every instruction inside them,
+/// then intersect with the original set from NamedMDNode.
+///
+/// This is the denominator fix (P6.1): the NamedMDNode was populated by
+/// InstMarker pre-optimization, so it includes lines whose IR was later
+/// DCE'd or constant-folded away. Those lines can never be executed, so
+/// including them in the denominator artificially deflates coverage.
+/// By intersecting with the "survived" set we get the true number of
+/// unsafe source lines that are reachable in the final binary.
+static void collectSurvivedUnsafeLines(
+    Module &M,
+    const std::set<std::string> &originalLines,
+    std::set<std::string> &survivedLines) {
+  for (Function &F : M) {
+    if (F.isDeclaration())
+      continue;
+
+    for (BasicBlock &BB : F) {
+      bool insideUnsafeRegion = false;
+      for (Instruction &I : BB) {
+        bool isBegin = false, isEnd = false;
+        if (isMarkerInstruction(I, isBegin, isEnd)) {
+          if (isBegin) {
+            insideUnsafeRegion = true;
+            // The marker itself carries a !dbg location from the original
+            // unsafe block opening; count it too (mirrors instrumentFunction).
+            if (const DILocation *Loc = I.getDebugLoc()) {
+              unsigned Line = Loc->getLine();
+              StringRef File = Loc->getFilename();
+              if (Line != 0 && !File.empty()) {
+                std::string LineKey =
+                    File.str() + ":" + std::to_string(Line);
+                if (originalLines.count(LineKey))
+                  survivedLines.insert(LineKey);
+              }
+            }
+          } else if (isEnd) {
+            insideUnsafeRegion = false;
+          }
+          continue;
+        }
+        if (!insideUnsafeRegion)
+          continue;
+
+        const DILocation *Loc = I.getDebugLoc();
+        if (!Loc)
+          continue;
+        unsigned Line = Loc->getLine();
+        StringRef File = Loc->getFilename();
+        if (Line == 0 || File.empty())
+          continue;
+
+        std::string LineKey = File.str() + ":" + std::to_string(Line);
+        if (originalLines.count(LineKey))
+          survivedLines.insert(LineKey);
+      }
+    }
+  }
+}
+
 PreservedAnalyses DynamicLineCountPass::run(Module &M, ModuleAnalysisManager &AM) {
   if (!isPrimaryPackage())
     return PreservedAnalyses::all();
 
-  // Phase 1: Read registered unsafe lines from NamedMDNode.
-  // InstMarker populates this pre-optimization; it survives O2 unlike
-  // instruction-level unsafe_line_info metadata.
-  std::set<std::string> registeredLines;
+  // Phase 1a: Read the full set of unsafe lines InstMarker emitted
+  // pre-optimization. This is the *upper bound* — some of these may have
+  // been optimized away before DynamicLineCount runs.
+  std::set<std::string> originalLines;
   if (NamedMDNode *UnsafeLinesMD =
           M.getNamedMetadata(UNSAFE_SOURCE_LINES_MD)) {
     for (unsigned i = 0; i < UnsafeLinesMD->getNumOperands(); i++) {
@@ -244,21 +329,39 @@ PreservedAnalyses DynamicLineCountPass::run(Module &M, ModuleAnalysisManager &AM
               LineConst->getValue()->getUniqueInteger().getZExtValue();
           std::string LineKey =
               FileStr->getString().str() + ":" + std::to_string(Line);
-          registeredLines.insert(LineKey);
+          originalLines.insert(LineKey);
         }
       }
     }
   }
 
+  if (originalLines.empty())
+    return PreservedAnalyses::all();
+
+  // Phase 1b: P6.1 — intersect with lines whose IR survived optimization,
+  // so the denominator reflects only lines that are actually reachable.
+  std::set<std::string> registeredLines;
+  collectSurvivedUnsafeLines(M, originalLines, registeredLines);
+
+  LLVM_DEBUG(dbgs() << "DynamicLineCount: " << originalLines.size()
+                    << " unsafe lines in source, "
+                    << registeredLines.size()
+                    << " survived optimization ("
+                    << (originalLines.size() - registeredLines.size())
+                    << " eliminated)\n");
+
   if (registeredLines.empty())
     return PreservedAnalyses::all();
 
   // Setup runtime functions
-  FunctionCallee RegisterLineFn, TrackExecutionFn, PrintStatsFn;
-  setupRuntimeFunctions(M, RegisterLineFn, TrackExecutionFn, PrintStatsFn);
+  FunctionCallee RegisterLineFn, RegisterPreOptCountFn, TrackExecutionFn,
+      PrintStatsFn;
+  setupRuntimeFunctions(M, RegisterLineFn, RegisterPreOptCountFn,
+                        TrackExecutionFn, PrintStatsFn);
 
   // Phase 2: Create module constructor to register all unsafe lines at startup
-  createModuleConstructor(M, registeredLines, RegisterLineFn);
+  createModuleConstructor(M, registeredLines, originalLines.size(),
+                          RegisterLineFn, RegisterPreOptCountFn);
   bool Modified = true;
 
   // Phase 3: Instrument execution tracking using markers + !dbg locations.
