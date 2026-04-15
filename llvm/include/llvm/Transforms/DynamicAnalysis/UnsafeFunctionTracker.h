@@ -36,11 +36,14 @@ struct UnsafeFunctionTrackerPass : public PassInfoMixin<UnsafeFunctionTrackerPas
   static bool isRequired() { return true; }
   
   /// \brief Metadata stored for each function
+  ///
+  /// `isUnsafe` is true iff the function has both (1) at least one validated
+  /// SESE region and (2) at least one instruction carrying !unsafe_inst
+  /// metadata inside one of those regions.  Both must survive optimization.
   struct FunctionMetadata {
     uint32_t id;
-    uint8_t hasUnsafeInst;
-    uint8_t hasUnsafeRegions;
-    uint16_t _padding;
+    uint8_t isUnsafe;
+    uint8_t _padding[3];
   };
   
   /// \brief Name of the metadata node storing function IDs

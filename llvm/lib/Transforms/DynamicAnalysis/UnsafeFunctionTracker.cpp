@@ -9,8 +9,10 @@
 #include "llvm/Transforms/DynamicAnalysis/UnsafeFunctionTracker.h"
 #include "llvm/Transforms/DynamicAnalysis/UnsafeAnalysisUtils.h"
 #include "llvm/Transforms/InstMarker/InstMarker.h"
+#include "llvm/Analysis/PostDominators.h"
 #include "llvm/IR/Constants.h"
 #include "llvm/IR/DerivedTypes.h"
+#include "llvm/IR/Dominators.h"
 #include "llvm/IR/Function.h"
 #include "llvm/IR/GlobalVariable.h"
 #include "llvm/IR/IRBuilder.h"
@@ -45,48 +47,44 @@ static bool shouldInstrumentFunction(const Function &F) {
          !Name.starts_with("llvm.");
 }
 
-/// \brief Analysis result for a function's unsafe characteristics
-struct FunctionUnsafeInfo {
-  bool hasUnsafeRegions;  // Function contains marker pairs
-  bool hasUnsafeInst;     // Function has !unsafe_inst metadata inside a region
-};
-
-/// \brief Analyze function for unsafe characteristics
+/// \brief Classify a function as unsafe iff BOTH conditions hold after
+///        optimization:
 ///
-/// Two flags are tracked independently:
+///   1. At least one validated SESE region (DomTree/PostDomTree confirmed
+///      begin/end marker pair) survives in the function.
 ///
-/// - hasUnsafeRegions: marker pairs exist in the function.  This is the
-///   primary signal — InstMarker inserts markers around unsafe blocks
-///   before optimization, and they survive as durable inline asm.
+///   2. At least one instruction inside one of those validated regions
+///      still carries !unsafe_inst metadata.
 ///
-/// - hasUnsafeInst: at least one instruction inside a marker region carries
-///   !unsafe_inst metadata.  At O0 this refines the picture (a region can
-///   contain only safe operations).  At O2 the metadata *may* survive on
-///   instructions that were not eliminated, but is not guaranteed — so
-///   hasUnsafeRegions is the authoritative flag for "function has unsafe code."
-static FunctionUnsafeInfo analyzeFunction(Function &F) {
-  FunctionUnsafeInfo Info = {false, false};
-  bool inRegion = false;
+/// The AND is what gives the signal meaning at O2: surviving markers alone
+/// don't prove unsafe work survived (the body may have been DCE'd), and
+/// stray !unsafe_inst metadata on code hoisted out of a region (e.g. by
+/// LICM) doesn't count either.  Requiring both cross-validates the two
+/// independent witnesses.
+///
+/// The previous linear `inRegion` bool scan walked basic blocks in IR list
+/// order rather than CFG order, which is unsound once BEGIN/END straddle
+/// basic-block boundaries (unwinding calls, loops, match arms, early
+/// returns).  The DomTree matcher consults the CFG directly.
+static bool isUnsafeFunction(Function &F) {
+  std::vector<CallInst *> BeginMarkers, EndMarkers;
+  collectMarkers(F, BeginMarkers, EndMarkers);
+  if (BeginMarkers.empty())
+    return false;
 
-  for (BasicBlock &BB : F) {
-    for (Instruction &I : BB) {
-      bool isBegin = false, isEnd = false;
-      if (isMarkerInstruction(I, isBegin, isEnd)) {
-        if (isBegin) {
-          inRegion = true;
-          Info.hasUnsafeRegions = true;
-        } else if (isEnd) {
-          inRegion = false;
-        }
-        continue;
-      }
+  DominatorTree DT(F);
+  PostDominatorTree PDT(F);
+  std::vector<SESERegion> Regions;
+  validateSESERegions(BeginMarkers, EndMarkers, DT, PDT, Regions);
+  if (Regions.empty())
+    return false;
 
-      if (inRegion && hasUnsafeMetadata(I))
-        Info.hasUnsafeInst = true;
-    }
-  }
+  for (BasicBlock &BB : F)
+    for (Instruction &I : BB)
+      if (hasUnsafeMetadata(I) && isInSESERegion(I, Regions, DT, PDT))
+        return true;
 
-  return Info;
+  return false;
 }
 
 } // anonymous namespace
@@ -109,18 +107,17 @@ PreservedAnalyses UnsafeFunctionTrackerPass::run(Module &M, ModuleAnalysisManage
     if (!shouldInstrumentFunction(F))
       continue;
 
-    F.setMetadata(FUNCTION_ID_METADATA, 
+    F.setMetadata(FUNCTION_ID_METADATA,
                   MDNode::get(Ctx, ConstantAsMetadata::get(
                     ConstantInt::get(Type::getInt32Ty(Ctx), nextId))));
 
-    FunctionUnsafeInfo Info = analyzeFunction(F);
+    // Every tracked function enters the table — this preserves denominators
+    // like total_functions_defined and total_instructions.  The `isUnsafe`
+    // flag (AND of validated regions + surviving unsafe metadata) is what
+    // the runtime uses to derive the unsafe/total ratios.
+    uint8_t isUnsafe = isUnsafeFunction(F) ? 1 : 0;
 
-    metadata.push_back({
-      nextId++,
-      static_cast<uint8_t>(Info.hasUnsafeInst ? 1 : 0),
-      static_cast<uint8_t>(Info.hasUnsafeRegions ? 1 : 0),
-      0
-    });
+    metadata.push_back({nextId++, isUnsafe, {0, 0, 0}});
 
     functionsToInstrument.push_back(&F);
   }
@@ -157,22 +154,29 @@ PreservedAnalyses UnsafeFunctionTrackerPass::run(Module &M, ModuleAnalysisManage
     }
   }
   
-  // Phase 3: Create global metadata table
+  // Phase 3: Create global metadata table.
+  //
+  // Layout must match the runtime's `FunctionMetadata` in unsafe_counter.rs:
+  //   struct { u32 id; u8 is_unsafe; u8 _padding[3]; }
+  // Three u8 padding elements keep the struct at 8 bytes with 4-byte
+  // alignment, matching `#[repr(C)]` on the Rust side.
+  Type *Int8Ty = Type::getInt8Ty(Ctx);
+  ArrayType *PaddingTy = ArrayType::get(Int8Ty, 3);
   StructType *MetadataType = StructType::get(
-    Int32Ty,                    // id
-    Type::getInt8Ty(Ctx),      // hasUnsafeInst
-    Type::getInt8Ty(Ctx),      // hasUnsafeRegions
-    Type::getInt16Ty(Ctx)      // padding
+    Int32Ty,     // id
+    Int8Ty,      // is_unsafe
+    PaddingTy    // _padding[3]
   );
-  
+
+  Constant *ZeroPadding = ConstantAggregateZero::get(PaddingTy);
+
   std::vector<Constant*> MetadataElems;
   for (const auto &meta : metadata) {
     MetadataElems.push_back(ConstantStruct::get(
       MetadataType,
       ConstantInt::get(Int32Ty, meta.id),
-      ConstantInt::get(Type::getInt8Ty(Ctx), meta.hasUnsafeInst),
-      ConstantInt::get(Type::getInt8Ty(Ctx), meta.hasUnsafeRegions),
-      ConstantInt::get(Type::getInt16Ty(Ctx), 0)
+      ConstantInt::get(Int8Ty, meta.isUnsafe),
+      ZeroPadding
     ));
   }
   
