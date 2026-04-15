@@ -14,6 +14,7 @@
 // UNSAFE-RUST BEGIN
 #include "llvm/Transforms/DynamicAnalysis/UnsafeAnalysisUtils.h"
 #include "llvm/Transforms/InstMarker/InstMarker.h"
+#include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/Analysis/PostDominators.h"
 #include "llvm/IR/BasicBlock.h"
 #include "llvm/IR/DebugInfoMetadata.h"
@@ -127,11 +128,19 @@ void llvm::validateSESERegions(const std::vector<CallInst *> &BeginMarkers,
                                const std::vector<CallInst *> &EndMarkers,
                                DominatorTree &DT, PostDominatorTree &PDT,
                                std::vector<SESERegion> &ValidRegions) {
+  // Each End can pair with at most one Begin. Without this, the same End
+  // may match multiple Begins, producing overlapping regions and causing
+  // isInSESERegion() to return true for code that isn't actually inside
+  // any single unsafe block.
+  SmallPtrSet<CallInst *, 16> ConsumedEnds;
   for (CallInst *Begin : BeginMarkers) {
     bool Matched = false;
     for (CallInst *End : EndMarkers) {
+      if (ConsumedEnds.contains(End))
+        continue;
       if (DT.dominates(Begin, End) && PDT.dominates(End, Begin)) {
         ValidRegions.push_back({Begin, End});
+        ConsumedEnds.insert(End);
         LLVM_DEBUG(dbgs() << "sese: valid region in "
                           << Begin->getFunction()->getName() << "\n");
         Matched = true;

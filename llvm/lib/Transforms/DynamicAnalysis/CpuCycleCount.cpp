@@ -14,9 +14,12 @@
 
 #include "llvm/Transforms/DynamicAnalysis/CpuCycleCount.h"
 #include "llvm/Transforms/DynamicAnalysis/UnsafeAnalysisUtils.h"
+#include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallVector.h"
+#include "llvm/Analysis/PostDominators.h"
 #include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/InlineAsm.h"
+#include "llvm/IR/Dominators.h"
 #include "llvm/IR/Module.h"
 #include "llvm/Transforms/InstMarker/InstMarker.h"
 #include "llvm/IR/DebugInfoMetadata.h"
@@ -33,66 +36,69 @@ const char *llvm::PRINT_STATS_FN = "print_cpu_cycle_stats";
 namespace {
 
 /// Instruments unsafe blocks within a function to measure CPU cycles.
-/// Uses a three-pass strategy to avoid iterator invalidation:
-/// 1. Collect begin/end marker pairs
-/// 2. Insert instrumentation calls with memory fences
-/// 3. Remove markers
+///
+/// Uses the same SESE matcher as ExternalCallTracker (DominatorTree +
+/// PostDominatorTree). A previous per-BasicBlock scan silently skipped
+/// regions whose BEGIN and END markers ended up in different BBs — which
+/// happens for any unsafe block containing a call with unwind, a loop, a
+/// match, or an early return. The asymmetry vs. ExternalCallTracker (which
+/// already used the DomTree matcher) caused unsafe_external_cycles to be
+/// recorded for regions where unsafe_cycles was not, violating the
+/// invariant unsafe_ext ⊆ unsafe_total.
 bool instrumentUnsafeBlocks(Function &F, FunctionCallee StartFn,
                              FunctionCallee EndFn) {
-  SmallVector<std::pair<Instruction *, Instruction *>, 16> InstrumentationPairs;
-  SmallVector<Instruction *, 16> MarkersToRemove;
+  DominatorTree DT(F);
+  PostDominatorTree PDT(F);
 
-  // First pass: collect all markers and instrumentation points
-  for (BasicBlock &BB : F) {
-    Instruction *CurrentBeginMarker = nullptr;
+  std::vector<CallInst *> BeginMarkers, EndMarkers;
+  llvm::collectMarkers(F, BeginMarkers, EndMarkers);
 
-    for (Instruction &I : BB) {
-      auto *Call = dyn_cast<CallBase>(&I);
-      if (!Call)
-        continue;
-
-      auto *IA = dyn_cast<InlineAsm>(Call->getCalledOperand());
-      if (!IA)
-        continue;
-
-      StringRef Asm = IA->getAsmString();
-      if (Asm == llvm::UNSAFE_MARKER_BEGIN) {
-        if (!CurrentBeginMarker)
-          CurrentBeginMarker = &I;
-      } else if (Asm == llvm::UNSAFE_MARKER_END && CurrentBeginMarker) {
-        InstrumentationPairs.push_back({CurrentBeginMarker, &I});
-        MarkersToRemove.push_back(CurrentBeginMarker);
-        MarkersToRemove.push_back(&I);
-        CurrentBeginMarker = nullptr;
-      }
-    }
-  }
-
-  if (InstrumentationPairs.empty())
+  if (BeginMarkers.empty())
     return false;
 
-  // Second pass: insert instrumentation while markers are still valid
-  for (auto [BeginMarker, EndMarker] : InstrumentationPairs) {
+  std::vector<SESERegion> ValidRegions;
+  llvm::validateSESERegions(BeginMarkers, EndMarkers, DT, PDT, ValidRegions);
+
+  if (ValidRegions.empty())
+    return false;
+
+  // Pass 1: insert instrumentation while markers are still in place.
+  //   StartFn goes BEFORE the begin marker; EndFn goes AFTER the end marker,
+  //   each wrapped in a SeqCst fence to prevent reorder across the boundary.
+  SmallPtrSet<Instruction *, 32> MarkersToRemove;
+  for (const SESERegion &R : ValidRegions) {
+    Instruction *BeginMarker = R.Begin;
+    Instruction *EndMarker = R.End;
+
     IRBuilder<> BeginBuilder(BeginMarker);
     BeginBuilder.CreateFence(AtomicOrdering::SequentiallyConsistent);
     auto *StartCall = BeginBuilder.CreateCall(StartFn);
     StartCall->setDebugLoc(getInstrumentationDebugLoc(BeginMarker));
 
-    IRBuilder<> EndBuilder(EndMarker);
+    // End marker: insert AFTER it to match the semantic "timer stops after the
+    // last instruction of the region", while keeping the fence tight to the
+    // end of the region.
+    Instruction *AfterEnd = EndMarker->getNextNonDebugInstruction();
+    IRBuilder<> EndBuilder(AfterEnd ? AfterEnd : EndMarker);
     EndBuilder.CreateFence(AtomicOrdering::SequentiallyConsistent);
     auto *EndCall = EndBuilder.CreateCall(EndFn, {StartCall});
     EndCall->setDebugLoc(getInstrumentationDebugLoc(EndMarker));
+
+    MarkersToRemove.insert(BeginMarker);
+    MarkersToRemove.insert(EndMarker);
   }
 
-  // Third pass: safely remove all markers after instrumentation
+  // Pass 2: erase markers that participated in a validated region. Unmatched
+  // markers are deliberately left alone — removing them silently would hide
+  // pairing bugs from downstream passes.
   for (Instruction *Marker : MarkersToRemove) {
-    if (Marker->getParent()) {
-      if (!Marker->user_empty()) {
-        Value *UndefVal = UndefValue::get(Marker->getType());
-        Marker->replaceAllUsesWith(UndefVal);
-      }
-      Marker->eraseFromParent();
+    if (!Marker->getParent())
+      continue;
+    if (!Marker->user_empty()) {
+      Value *UndefVal = UndefValue::get(Marker->getType());
+      Marker->replaceAllUsesWith(UndefVal);
     }
+    Marker->eraseFromParent();
   }
 
   return true;
