@@ -7,8 +7,10 @@
 //===----------------------------------------------------------------------===//
 ///
 /// \file
-/// Module pass that assigns function IDs and tracks unsafe functions.
-/// This pass must run before UnsafeInstCounter.
+/// Module pass that assigns function IDs and tracks statically unsafe
+/// functions. This pass must run before UnsafeInstCounter so the runtime can
+/// combine this static classification with the dynamic "unsafe actually
+/// executed" signal collected by the block counter.
 ///
 //===----------------------------------------------------------------------===//
 
@@ -39,7 +41,9 @@ struct UnsafeFunctionTrackerPass : public PassInfoMixin<UnsafeFunctionTrackerPas
   ///
   /// `isUnsafe` is true iff the function has both (1) at least one validated
   /// SESE region and (2) at least one instruction carrying !unsafe_inst
-  /// metadata inside one of those regions.  Both must survive optimization.
+  /// metadata inside one of those regions. Both must survive optimization.
+  /// This is intentionally a static property; the runtime separately tracks
+  /// whether such unsafe instructions actually executed.
   struct FunctionMetadata {
     uint32_t id;
     uint8_t isUnsafe;

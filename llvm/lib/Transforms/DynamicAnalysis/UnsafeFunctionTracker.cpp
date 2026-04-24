@@ -113,8 +113,9 @@ PreservedAnalyses UnsafeFunctionTrackerPass::run(Module &M, ModuleAnalysisManage
 
     // Every tracked function enters the table — this preserves denominators
     // like total_functions_defined and total_instructions.  The `isUnsafe`
-    // flag (AND of validated regions + surviving unsafe metadata) is what
-    // the runtime uses to derive the unsafe/total ratios.
+    // flag (AND of validated regions + surviving unsafe metadata) remains a
+    // static classification; the runtime separately derives the dynamic metric
+    // for functions whose unsafe instructions actually executed.
     uint8_t isUnsafe = isUnsafeFunction(F) ? 1 : 0;
 
     metadata.push_back({nextId++, isUnsafe, {0, 0, 0}});

@@ -157,11 +157,26 @@ void llvm::validateSESERegions(const std::vector<CallInst *> &BeginMarkers,
 bool llvm::isInSESERegion(const Instruction &I,
                           const std::vector<SESERegion> &ValidRegions,
                           DominatorTree &DT, PostDominatorTree &PDT) {
+  const BasicBlock *IBB = I.getParent();
   for (const auto &R : ValidRegions) {
-    if (DT.dominates(R.Begin->getParent(), I.getParent()) &&
-        PDT.dominates(R.End->getParent(), I.getParent())) {
-      return true;
-    }
+    BasicBlock *BeginBB = R.Begin->getParent();
+    BasicBlock *EndBB = R.End->getParent();
+
+    if (!DT.dominates(BeginBB, IBB) || !PDT.dominates(EndBB, IBB))
+      continue;
+
+    // Same-BB refinement. BB-level dominance is reflexive, so without
+    // these checks every load/store in BeginBB or EndBB would be
+    // considered in-region even when it sits physically before
+    // marker_begin or after marker_end. InstMarker brackets the
+    // unsafe span as [First, Last] per-BB, so accesses outside that
+    // physical span are not "between the marker pair".
+    if (IBB == BeginBB && &I != R.Begin && !R.Begin->comesBefore(&I))
+      continue;
+    if (IBB == EndBB && &I != R.End && !I.comesBefore(R.End))
+      continue;
+
+    return true;
   }
   return false;
 }
