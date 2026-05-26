@@ -78,15 +78,16 @@ bool UnsafeInstCounterPass::getUnsafeCategory(const Instruction &I,
                                                UnsafeCategory &category) {
   switch (I.getOpcode()) {
     case Instruction::Load:
-      category = UNSAFE_LOAD;
+      category = cast<LoadInst>(&I)->isAtomic() ? UNSAFE_ATOMIC : UNSAFE_LOAD;
       return true;
 
     case Instruction::Store:
-      category = UNSAFE_STORE;
+      category = cast<StoreInst>(&I)->isAtomic() ? UNSAFE_ATOMIC : UNSAFE_STORE;
       return true;
 
     case Instruction::AtomicCmpXchg:
     case Instruction::AtomicRMW:
+    case Instruction::Fence:
       category = UNSAFE_ATOMIC;
       return true;
 
