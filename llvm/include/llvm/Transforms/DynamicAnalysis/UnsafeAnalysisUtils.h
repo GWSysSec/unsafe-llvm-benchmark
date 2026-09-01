@@ -31,10 +31,16 @@ class CallInst;
 class DominatorTree;
 class PostDominatorTree;
 
-/// \brief Check if this compilation unit is the primary Cargo package.
+/// \brief Check whether this compilation unit should be instrumented.
 ///
-/// All dynamic analysis passes must only instrument the primary crate,
-/// not dependencies. This reads the CARGO_PRIMARY_PACKAGE env var.
+/// By default the dynamic analysis passes instrument only the primary crate
+/// and not its dependencies; that decision reads the CARGO_PRIMARY_PACKAGE
+/// environment variable, which cargo sets on the primary package alone.
+///
+/// Setting UNSAFE_INSTRUMENT_ALL_PACKAGES=1 makes this return true for every
+/// crate, so the whole dependency graph is instrumented. That is the opt-in
+/// used by the whole-program measurement arm. Without the variable the
+/// behaviour is unchanged.
 bool isPrimaryPackage();
 
 /// \brief Get a valid debug location for compiler-inserted instrumentation.

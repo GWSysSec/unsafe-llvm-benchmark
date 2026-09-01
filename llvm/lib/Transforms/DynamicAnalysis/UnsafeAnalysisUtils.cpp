@@ -32,6 +32,14 @@
 using namespace llvm;
 
 bool llvm::isPrimaryPackage() {
+  // Opt-in override: instrument every crate in the dependency graph, not just
+  // the package cargo marked primary. Used by the whole-program measurement
+  // arm, where a main crate's unsafe behaviour is meant to include the unsafe
+  // code its dependencies execute on its behalf. Absent the variable the
+  // behaviour is exactly as before.
+  const char *All = getenv("UNSAFE_INSTRUMENT_ALL_PACKAGES");
+  if (All && strcmp(All, "1") == 0)
+    return true;
   const char *P = getenv("CARGO_PRIMARY_PACKAGE");
   return P && strcmp(P, "1") == 0;
 }

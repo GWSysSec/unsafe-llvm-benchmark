@@ -151,7 +151,8 @@ The metadata table stores two flags per function:
 - **Implementation:** `UnsafeAnalysisUtils.cpp`
 - **Purpose:** Shared infrastructure used by all passes. Extracted in Phase 0 to eliminate duplication — these functions were previously copy-pasted across every pass.
 - **Provides:**
-  - `isPrimaryPackage()` — checks `CARGO_PRIMARY_PACKAGE` env var. Every pass calls this as its first guard: if false, the pass returns `PreservedAnalyses::all()` immediately. This ensures only the primary crate (not dependencies) is instrumented.
+  - `isPrimaryPackage()` — checks the `CARGO_PRIMARY_PACKAGE` env var, which cargo sets only on the primary package. Every pass calls this as its first guard: if false, the pass returns `PreservedAnalyses::all()` immediately. This ensures only the primary crate (not dependencies) is instrumented.
+    Setting `UNSAFE_INSTRUMENT_ALL_PACKAGES=1` makes the function return true for every crate, so the whole dependency graph is instrumented. That is the opt-in used by the whole-program measurement arm. Without the variable the behaviour is unchanged. Build scripts and proc-macro crates should be excluded separately with a `RUSTC_WRAPPER`, because their code runs during compilation rather than in the measured test binary.
   - `getInstrumentationDebugLoc(Instruction *InsertPt)` — finds the nearest valid `DILocation` for an instrumentation call. LLVM's verifier requires all calls in debug-info-enabled modules to carry a `!dbg` location; this helper walks the insertion point's neighbors to find one.
   - `isMarkerBegin(Instruction &I)` / `isMarkerEnd(Instruction &I)` — detect InstMarker's inline asm `marker_begin` / `marker_end` calls.
   - `isMarkerInstruction(Instruction &I, bool &isBegin, bool &isEnd)` — combined check, returns both flags. Used in linear-scan region detection loops.
