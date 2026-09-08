@@ -16,6 +16,7 @@
 #include "llvm/Transforms/DynamicAnalysis/HeapTracker.h"
 #include "llvm/Transforms/DynamicAnalysis/UnsafeAnalysisUtils.h"
 #include "llvm/ADT/StringRef.h"
+#include "llvm/Analysis/ValueTracking.h"
 #include "llvm/Analysis/PostDominators.h"
 #include "llvm/IR/BasicBlock.h"
 #include "llvm/IR/Constants.h"
@@ -41,6 +42,42 @@ const char *llvm::DYN_UNSAFE_MEM_ACCESS_FN = "dyn_unsafe_mem_access";
 
 namespace {
 
+/// \brief Should this memory access be instrumented at all?
+///
+/// No, when the address is a global variable or a stack slot. Two reasons,
+/// and the second is why this guard has to exist rather than merely being an
+/// optimisation.
+///
+/// It changes no measurement. Both runtime hooks resolve the address against
+/// the set of tracked heap allocations and increment nothing unless it falls
+/// inside one; see access_heap_obj and access_unsafe_heap_obj in
+/// lib/perf/src/heap_tracker.rs. A static or a stack slot never lies in that
+/// set, so the call fires and does nothing. Skipping it removes a call, not a
+/// count.
+///
+/// It also fixes a link failure. This pass runs after every optimisation, so
+/// a load whose address is a `static` may reach it in a codegen unit that
+/// only DECLARES that static, its definition having been dropped elsewhere as
+/// unused. Passing the address to a hook materialises a reference to a symbol
+/// nothing defines, and the link fails with "undefined hidden symbol". On the
+/// 100-crate corpus this took out colored (colored::style::CLEAR) and tokio
+/// (tokio::runtime::io::EXPOSE_IO), losing both crates' heap data entirely.
+/// Verified on colored: without this pass no object references CLEAR at all
+/// and the build links; with it, one codegen unit carries an undefined
+/// reference.
+///
+/// getUnderlyingObject does not see through a load, so a pointer that was
+/// READ from a global is still instrumented -- only accesses TO the global's
+/// own storage are skipped.
+bool skipMemInst(const Value *Addr) {
+  const Value *Obj = getUnderlyingObject(Addr);
+  return isa<GlobalValue>(Obj) || isa<AllocaInst>(Obj);
+}
+
+} // anonymous namespace
+
+namespace {
+
 /// \brief Add a call to dyn_mem_access() before each memory instruction.
 /// \param F The target function.
 /// \param DynMemAccessFn The to-be-inserted callee.
@@ -58,6 +95,8 @@ void instrumentMemInst(Function &F, FunctionCallee DynMemAccessFn) {
       Value *DestAddr = isa<LoadInst>(MemInst) ?
           cast<LoadInst>(MemInst)->getPointerOperand() :
           cast<StoreInst>(MemInst)->getPointerOperand();
+      if (skipMemInst(DestAddr))
+        continue;
       auto *Call = Builder.CreateCall(DynMemAccessFn, DestAddr);
       Call->setDebugLoc(getInstrumentationDebugLoc(MemInst));
     }
@@ -102,6 +141,8 @@ bool instrumentUnsafeMemInst(Function &F, FunctionCallee DynUnsafeMemAccessFn,
     bool IsLoad = isa<LoadInst>(MemInst);
     Value *DestAddr = IsLoad ? cast<LoadInst>(MemInst)->getPointerOperand()
                              : cast<StoreInst>(MemInst)->getPointerOperand();
+    if (skipMemInst(DestAddr))
+      continue;
     Value *IsLoadVal = ConstantInt::get(
         Type::getInt1Ty(F.getContext()), IsLoad);
     auto *Call = Builder.CreateCall(DynUnsafeMemAccessFn, {DestAddr, IsLoadVal});
