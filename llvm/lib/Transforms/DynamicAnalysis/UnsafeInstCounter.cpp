@@ -29,7 +29,6 @@ namespace {
 
 constexpr const char *RECORD_BLOCK_FN = "__unsafe_record_block";
 
-/// \brief Check if function should be instrumented
 static bool shouldInstrumentFunction(const Function &F) {
   if (F.isDeclaration() || F.isIntrinsic())
     return false;
@@ -39,7 +38,6 @@ static bool shouldInstrumentFunction(const Function &F) {
          !Name.starts_with("llvm.");
 }
 
-/// \brief Get or create the record block function
 static FunctionCallee getOrCreateRecordBlockFn(Module &M) {
   LLVMContext &Ctx = M.getContext();
   Type *VoidTy = Type::getVoidTy(Ctx);
@@ -131,7 +129,6 @@ UnsafeInstCounterPass::analyzeBasicBlock(BasicBlock &BB,
   BlockCounts counts;
 
   for (Instruction &I : BB) {
-    // Skip debug intrinsics and markers
     if (isa<DbgInfoIntrinsic>(&I))
       continue;
 
@@ -139,10 +136,8 @@ UnsafeInstCounterPass::analyzeBasicBlock(BasicBlock &BB,
     if (isMarkerInstruction(I, isBegin, isEnd))
       continue;
 
-    // Count all instructions
     counts.totalInsts++;
 
-    // Count unsafe instructions via SESE region membership
     if (!Regions.empty() && isInSESERegion(I, Regions, DT, PDT)) {
       counts.totalUnsafeInsts++;
 
@@ -176,16 +171,14 @@ PreservedAnalyses UnsafeInstCounterPass::run(Function &F,
   if (!shouldInstrumentFunction(F))
     return PreservedAnalyses::all();
 
-  // Get function ID from metadata (local per-CGU ID)
+  // The id in the metadata is local to this codegen unit.
   uint32_t funcId = getFunctionId(F);
   if (funcId == UINT32_MAX)
     return PreservedAnalyses::all();
 
-  // Get or create runtime function
   Module *M = F.getParent();
   FunctionCallee RecordBlockFn = getOrCreateRecordBlockFn(*M);
 
-  // Build SESE regions for cross-BB unsafe region detection
   auto &DT = AM.getResult<DominatorTreeAnalysis>(F);
   auto &PDT = AM.getResult<PostDominatorTreeAnalysis>(F);
 
@@ -199,7 +192,6 @@ PreservedAnalyses UnsafeInstCounterPass::run(Function &F,
   // Load the per-module base offset for multi-CGU global ID remapping
   GlobalVariable *BaseGV = M->getGlobalVariable("__unsafe_func_id_base");
 
-  // Analyze and instrument basic blocks
   bool modified = false;
   Type *Int32Ty = Type::getInt32Ty(F.getContext());
   Type *Int16Ty = Type::getInt16Ty(F.getContext());
@@ -213,7 +205,6 @@ PreservedAnalyses UnsafeInstCounterPass::run(Function &F,
     Instruction *Term = BB.getTerminator();
     IRBuilder<> Builder(Term);
 
-    // Compute global func_id = base + local_id (CGU-safe)
     Value *GlobalFuncId;
     if (BaseGV) {
       Value *Base = Builder.CreateLoad(Int32Ty, BaseGV);

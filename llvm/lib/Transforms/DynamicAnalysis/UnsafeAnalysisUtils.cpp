@@ -32,11 +32,9 @@
 using namespace llvm;
 
 bool llvm::isPrimaryPackage() {
-  // Opt-in override: instrument every crate in the dependency graph, not just
-  // the package cargo marked primary. Used by the whole-program measurement
-  // arm, where a main crate's unsafe behaviour is meant to include the unsafe
-  // code its dependencies execute on its behalf. Absent the variable the
-  // behaviour is exactly as before.
+  // Opt-in override for the whole-program measurement: instrument every crate
+  // in the dependency graph, not only the one cargo marked primary. Unset, the
+  // behaviour is unchanged.
   const char *All = getenv("UNSAFE_INSTRUMENT_ALL_PACKAGES");
   if (All && strcmp(All, "1") == 0)
     return true;
@@ -173,12 +171,9 @@ bool llvm::isInSESERegion(const Instruction &I,
     if (!DT.dominates(BeginBB, IBB) || !PDT.dominates(EndBB, IBB))
       continue;
 
-    // Same-BB refinement. BB-level dominance is reflexive, so without
-    // these checks every load/store in BeginBB or EndBB would be
-    // considered in-region even when it sits physically before
-    // marker_begin or after marker_end. InstMarker brackets the
-    // unsafe span as [First, Last] per-BB, so accesses outside that
-    // physical span are not "between the marker pair".
+    // Block dominance is reflexive, so in the marker's own block it admits
+    // instructions physically outside the [First, Last] span InstMarker
+    // bracketed. Order within the block decides those.
     if (IBB == BeginBB && &I != R.Begin && !R.Begin->comesBefore(&I))
       continue;
     if (IBB == EndBB && &I != R.End && !I.comesBefore(R.End))

@@ -32,12 +32,10 @@ constexpr const char *INIT_METADATA_FN = "__unsafe_init_metadata";
 constexpr const char *RECORD_FUNCTION_FN = "__unsafe_record_function";
 constexpr const char *DUMP_STATS_FN = "__unsafe_dump_stats";
 
-/// \brief Check if instruction has unsafe metadata
 static bool hasUnsafeMetadata(const Instruction &I) {
   return I.getMetadata("unsafe_inst") != nullptr;
 }
 
-/// \brief Check if function should be instrumented
 static bool shouldInstrumentFunction(const Function &F) {
   if (F.isDeclaration() || F.isIntrinsic())
     return false;
@@ -47,25 +45,14 @@ static bool shouldInstrumentFunction(const Function &F) {
          !Name.starts_with("llvm.");
 }
 
-/// \brief Classify a function as unsafe iff BOTH conditions hold after
-///        optimization:
+/// Unsafe iff both witnesses survive optimisation: a validated marker region,
+/// and an instruction inside it still carrying !unsafe_inst. Either alone is
+/// not enough -- a region whose body was deleted still has its markers, and
+/// LICM can hoist tagged code out of one.
 ///
-///   1. At least one validated SESE region (DomTree/PostDomTree confirmed
-///      begin/end marker pair) survives in the function.
-///
-///   2. At least one instruction inside one of those validated regions
-///      still carries !unsafe_inst metadata.
-///
-/// The AND is what gives the signal meaning at O2: surviving markers alone
-/// don't prove unsafe work survived (the body may have been DCE'd), and
-/// stray !unsafe_inst metadata on code hoisted out of a region (e.g. by
-/// LICM) doesn't count either.  Requiring both cross-validates the two
-/// independent witnesses.
-///
-/// The previous linear `inRegion` bool scan walked basic blocks in IR list
-/// order rather than CFG order, which is unsound once BEGIN/END straddle
-/// basic-block boundaries (unwinding calls, loops, match arms, early
-/// returns).  The DomTree matcher consults the CFG directly.
+/// Region membership goes through the dominator trees rather than a linear
+/// scan, because a marker pair can straddle basic blocks (unwinding calls,
+/// loops, match arms, early returns) and IR list order is not CFG order.
 static bool isUnsafeFunction(Function &F) {
   std::vector<CallInst *> BeginMarkers, EndMarkers;
   collectMarkers(F, BeginMarkers, EndMarkers);
